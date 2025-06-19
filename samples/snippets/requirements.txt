@@ -40,4 +40,4 @@ six==1.17.0
 sqlalchemy===1.4.27
 typing-extensions==4.13.0
 urllib3===2.2.3; python_version == '3.8'
-urllib3==2.3.0; python_version >= '3.9'
+urllib3==2.5.0; python_version >= '3.9'
