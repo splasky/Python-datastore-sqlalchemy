@@ -1,0 +1,626 @@
+# Copyright (c) 2025 The sqlalchemy-datastore Authors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+# the Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+# FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+# IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+from sqlalchemy.dialects import registry
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy import Engine
+
+from . import datastore_dbapi
+from ._helpers import create_datastore_client
+from ._types import _get_sqla_column_type
+from .parse_url import parse_url
+
+
+class GoogleCloudDatastoreDialectCompiler(SQLCompiler):
+    def visit_select(self, select):
+        # Generate custom SQL for SELECT statements
+        return "SELECT * FROM " + select.froms[0].name
+
+
+class GoogleCloudDatastoreDialect(DefaultDialect):
+    name = "datastore"
+    driver = "datastore"
+    supports_sane_rowcount = True
+    supports_sane_multi_rowcount = True
+    supports_unicode_binds = True
+    supports_native_decimal = False
+    supports_empty_insert = False
+    statement_compiler = GoogleCloudDatastoreDialectCompiler
+
+    @classmethod
+    def get_dbapi(cls):
+        """
+        Return the DBAPI module for this dialect.
+        """
+        return datastore_dbapi
+
+    @classmethod
+    def import_dbapi(cls):
+        return cls.get_dbapi()
+
+    def __init__(
+        self,
+        arraysize=5000,
+        credentials_path=None,
+        billing_project_id=None,
+        location=None,
+        credentials_info=None,
+        credentials_base64=None,
+        list_tables_page_size=1000,
+        *args,
+        **kwargs,
+    ):
+        super(GoogleCloudDatastoreDialect, self).__init__(*args, **kwargs)
+        self.arraysize = arraysize
+        self.credentials_path = credentials_path
+        self.credentials_info = credentials_info
+        self.credentials_base64 = credentials_base64
+        self.project_id = None
+        self.billing_project_id = billing_project_id
+        self.location = location
+        self.identifier_preparer = self.preparer(self)
+        self.dataset_id = None
+        self.list_tables_page_size = list_tables_page_size
+
+    def create_connect_args(self, url):
+        (
+            self.project_id,
+            location,
+            dataset_id,
+            arraysize,
+            credentials_path,
+            credentials_base64,
+            provided_job_config,
+            list_tables_page_size,
+            user_supplied_client,
+        ) = parse_url(url)
+
+        self.arraysize = arraysize or self.arraysize
+        self.list_tables_page_size = list_tables_page_size or self.list_tables_page_size
+        self.location = location or self.location
+        self.credentials_path = credentials_path or self.credentials_path
+        self.credentials_base64 = credentials_base64 or self.credentials_base64
+        self.dataset_id = dataset_id
+        self.billing_project_id = self.billing_project_id or self.project_id
+
+        if user_supplied_client:
+            # The user is expected to supply a client with
+            # create_engine('...', connect_args={'client': ds_client})
+            return ([], {})
+        else:
+            client = create_datastore_client(
+                credentials_path=self.credentials_path,
+                credentials_info=self.credentials_info,
+                credentials_base64=self.credentials_base64,
+                project_id=self.billing_project_id,
+            )
+            # If the user specified `bigquery://` we need to set the project_id
+            # from the client
+            self.project_id = self.project_id or client.project
+            self.billing_project_id = self.billing_project_id or client.project
+            return ([], {"client": client})
+
+    def get_table_names(self, connection, schema=None, **kw):
+        # Implement logic to retrieve table names from the database
+        if isinstance(connection, Engine):
+            connection = connection.connect()
+
+        client = connection.connection._client
+        query = client.query(kind="__kind__")
+        query = query.keys_only()
+        kinds = list(query.fetch())
+        result = []
+        for kind in kinds:
+            result.append(kind.key.name)
+        return result
+
+    def get_columns(self, connection, table_name, schema=None, **kw):
+        # Implement logic to retrieve column information from the database
+        if isinstance(connection, Engine):
+            connection = connection.connect()
+        client = connection.connection._client
+        query = client.query(kind=table_name)
+        ancestor_key = client.key("__kind__", "APIKey")
+        query = client.query(kind="__property__", ancestor=ancestor_key)
+        properties = list(query.fetch())
+        columns = []
+        # TODO: use _types.get_columns instead
+        for property in properties:
+            columns.append(
+                {
+                    "name": property.key.name,
+                    "type": _get_sqla_column_type(property.get("property_representation")[0]
+                                                  if property.get("property_representation", None) is not None else "STRING"),
+                    "nullable": True,
+                    "comment": "",
+                    "default": None,
+                }
+            )
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+        # Implement logic to execute a SQL statement
+        cursor.execute(statement, parameters)
+        return cursor.fetchall()
+
+
+registry.register("my_custom_dialect", "my_custom_dialect", "dialect")
+
+from sqlalchemy.engine import default
+from sqlalchemy import exc, types as sqltypes
+from sqlalchemy.sql import compiler
+from sqlalchemy.schema import CreateColumn, DropTable, CreateTable
+
+# Import Google Cloud Datastore client library
+from google.cloud import datastore
+
+# Define constants for the dialect
+class DatastoreCompiler(compiler.SQLCompiler):
+    """
+    Custom SQLCompiler for Google Cloud Datastore.
+    Translates SQLAlchemy expressions into Datastore queries/operations.
+    """
+    def visit_select(self, select, **kw):
+        """
+        Handles SELECT statements.
+        Datastore doesn't use SQL, so this translates to Datastore query objects.
+        """
+        # A very simplified approach. In a real dialect, this would
+        # involve much more complex parsing of WHERE clauses, ORDER BY, LIMIT, etc.
+        from_obj = select.froms[0]
+        kind = from_obj.element.name # Assumes a single table and its name is the 'kind'
+
+        if select._simple_int_clause is not None:
+            # Handle primary key lookups if a specific ID is queried
+            # This is a highly simplified example.
+            pk_column = None
+            for col in select.selected_columns:
+                if col.primary_key:
+                    pk_column = col
+                    break
+            if pk_column:
+                # Find the primary key value from the WHERE clause
+                # This is a very naive way to get the ID for a direct lookup.
+                # A proper implementation would parse the expression tree.
+                pk_value = None
+                if select._where_criteria:
+                    # Look for comparison like 'id = value'
+                    for criterion in select._where_criteria:
+                        if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
+                            if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
+                                pk_value = criterion.right.value
+                                break
+                if pk_value is not None:
+                    # Return a special instruction for direct lookup by ID
+                    # The execution context will handle this.
+                    return {'kind': kind, 'id': pk_value, 'type': 'lookup'}
+
+
+        # Build a basic query object for Datastore
+        query = {
+            'kind': kind,
+            'filters': [], # Store filters here if WHERE clauses were parsed
+            'order_by': [],
+            'limit': select._limit,
+            'offset': select._offset,
+            'type': 'query'
+        }
+
+        # Simplified handling of WHERE clause (only direct comparisons for now)
+        # A real dialect needs to traverse the expression tree.
+        if select._where_criteria:
+            for criterion in select._where_criteria:
+                if hasattr(criterion, 'left') and hasattr(criterion, 'right') and hasattr(criterion, 'operator'):
+                    col_name = criterion.left.name
+                    op = criterion.operator.__name__ # e.g., 'eq', 'ne', 'gt', 'lt'
+                    value = criterion.right.value
+
+                    # Map SQLAlchemy operators to Datastore filter operators
+                    datastore_op_map = {
+                        'eq': '=',
+                        'ne': '!=', # Not directly supported in Datastore, often requires two queries
+                        'gt': '>',
+                        'ge': '>=',
+                        'lt': '<',
+                        'le': '<='
+                    }
+                    if op in datastore_op_map:
+                        query['filters'].append((col_name, datastore_op_map[op], value))
+                    else:
+                        # Handle other operators or raise error
+                        pass
+
+        # Handle order by
+        for order in select._order_by_clause.clauses:
+            column_name = order.element.name
+            direction = 'ASCENDING' if order.is_ascending else 'DESCENDING'
+            query['order_by'].append((column_name, direction))
+
+        return query
+
+    def visit_insert(self, insert, **kw):
+        """
+        Handles INSERT statements.
+        """
+        table = insert.table
+        kind = table.name
+        parameters = insert.parameters[0] # Assumes single parameter set for now
+
+        # Datastore keys require a path. If primary key is provided, use it as ID.
+        # Otherwise, Datastore generates one.
+        key_name = None
+        for col in table.columns:
+            if col.primary_key and col.name in parameters:
+                key_name = parameters[col.name]
+                break
+
+        return {'kind': kind, 'data': parameters, 'key_name': key_name, 'type': 'insert'}
+
+    def visit_update(self, update, **kw):
+        """
+        Handles UPDATE statements.
+        Requires a WHERE clause to identify the entity to update.
+        """
+        table = update.table
+        kind = table.name
+        parameters = update.parameters[0] # Assumes single parameter set for values to update
+
+        # Extract primary key from WHERE clause
+        key_name = None
+        pk_column = None
+        for col in table.columns:
+            if col.primary_key:
+                pk_column = col
+                break
+
+        if pk_column and update._where_criteria:
+            # Simplified: assuming direct equality filter on PK for update
+            for criterion in update._where_criteria:
+                if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
+                    if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
+                        key_name = criterion.right.value
+                        break
+
+        if key_name is None:
+            raise exc.CompileError("UPDATE statement requires a primary key in WHERE clause for Datastore.")
+
+        # Exclude the primary key from data to update if it's there
+        data_to_update = {k: v for k, v in parameters.items() if k != pk_column.name}
+
+        return {'kind': kind, 'id': key_name, 'data': data_to_update, 'type': 'update'}
+
+    def visit_delete(self, delete, **kw):
+        """
+        Handles DELETE statements.
+        Requires a WHERE clause to identify the entity to delete.
+        """
+        table = delete.table
+        kind = table.name
+
+        key_name = None
+        pk_column = None
+        for col in table.columns:
+            if col.primary_key:
+                pk_column = col
+                break
+
+        if pk_column and delete._where_criteria:
+            # Simplified: assuming direct equality filter on PK for delete
+            for criterion in delete._where_criteria:
+                if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
+                    if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
+                        key_name = criterion.right.value
+                        break
+
+        if key_name is None:
+            raise exc.CompileError("DELETE statement requires a primary key in WHERE clause for Datastore.")
+
+        return {'kind': kind, 'id': key_name, 'type': 'delete'}
+
+    def visit_drop_table(self, drop, **kw):
+        """
+        Handles DROP TABLE statements.
+        In Datastore, this means deleting all entities of a given 'kind'.
+        This operation can be dangerous and expensive.
+        """
+        # This is a very destructive operation. Implement with caution.
+        return {'kind': drop.element.name, 'type': 'drop_kind'}
+
+    def visit_create_table(self, create, **kw):
+        """
+        Handles CREATE TABLE statements.
+        Datastore is schemaless, so this primarily serves to acknowledge the
+        'kind' name. It doesn't create a schema in the traditional sense.
+        """
+        # No actual schema creation in Datastore.
+        # This just acknowledges the existence of a 'kind'.
+        # A real dialect might use this to register expected properties for validation.
+        return {'kind': create.element.name, 'type': 'create_kind'}
+
+
+class DatastoreTypeCompiler(compiler.GenericTypeCompiler):
+    """
+    Type compiler for Datastore, mapping SQLAlchemy types to Datastore's implicit types.
+    Datastore infers types, so this mostly handles basic scalar types.
+    """
+    def visit_INTEGER(self, type_, **kw):
+        return None # Datastore infers numbers
+    def visit_SMALLINT(self, type_, **kw):
+        return None
+    def visit_BIGINT(self, type_, **kw):
+        return None
+    def visit_BOOLEAN(self, type_, **kw):
+        return None # Datastore infers booleans
+    def visit_FLOAT(self, type_, **kw):
+        return None # Datastore infers numbers
+    def visit_NUMERIC(self, type_, **kw):
+        return None
+    def visit_DATETIME(self, type_, **kw):
+        return None # Datastore infers datetime objects
+    def visit_TIMESTAMP(self, type_, **kw):
+        return None
+    def visit_DATE(self, type_, **kw):
+        return None # Datastore infers date objects 
+    def visit_TIME(self, type_, **kw):
+        return None
+    def visit_VARCHAR(self, type_, **kw):
+        return None # Datastore infers strings
+    def visit_TEXT(self, type_, **kw):
+        return None
+    def visit_BLOB(self, type_, **kw):
+        return None # Datastore handles bytes
+    def visit_JSON(self, type_, **kw):
+        return None # Datastore handles dicts/lists directly (as properties or embedded entities)
+
+
+class DatastoreExecutionContext(default.DefaultExecutionContext):
+    """
+    Execution context for Datastore operations.
+    This is where the actual calls to the `google.cloud.datastore` client happen.
+    """
+    def __init__(self, dialect, connection, dbapi_connection, **kw):
+        super().__init__(dialect, connection, dbapi_connection, **kw)
+        self.datastore_client = dbapi_connection
+
+    def fire_sequence(self, sequence, type_):
+        """
+        Datastore uses auto-generated IDs, so sequences are not directly applicable
+        in the traditional SQL sense.
+        """
+        return None
+
+    def create_cursor(self):
+        """
+        Datastore operations don't use cursors in the traditional SQL sense.
+        This method will return a dummy object or None if not needed for a specific op.
+        """
+        return None
+
+    def execute_string(self, text, **kw):
+        """
+        This method is called when the compiler returns the compiled SQL.
+        In our case, the compiler returns a dict representing the Datastore operation.
+        """
+        operation = text # The 'text' here is actually the dictionary from our compiler
+
+        op_type = operation['type']
+        kind = operation['kind']
+
+        if op_type == 'query':
+            datastore_query = self.datastore_client.query(kind=kind)
+
+            # Apply filters
+            for prop, op, val in operation['filters']:
+                datastore_query.add_filter(prop, op, val)
+
+            # Apply order by
+            for prop, direction in operation['order_by']:
+                if direction == 'ASCENDING':
+                    datastore_query.order = [prop]
+                else:
+                    datastore_query.order = [f'-{prop}']
+
+            # Apply limit and offset
+            limit = operation['limit']
+            offset = operation['offset']
+
+            results = []
+            for entity in datastore_query.fetch(limit=limit, offset=offset):
+                # Convert Datastore Entity to a dictionary for SQLAlchemy result rows
+                row_data = dict(entity)
+                # Include the entity's ID (key.id_or_name)
+                row_data['id'] = entity.key.id_or_name
+                results.append(row_data)
+            return results
+        elif op_type == 'lookup':
+            # Direct lookup by ID
+            key_id = operation['id']
+            key = self.datastore_client.key(kind, key_id)
+            entity = self.datastore_client.get(key)
+            if entity:
+                row_data = dict(entity)
+                row_data['id'] = entity.key.id_or_name
+                return [row_data]
+            return []
+        elif op_type == 'insert':
+            entity = datastore.Entity(self.datastore_client.key(kind, operation['key_name'])
+                                      if operation['key_name'] else self.datastore_client.key(kind))
+            entity.update(operation['data'])
+            self.datastore_client.put(entity)
+            # Return the key of the inserted entity, especially if ID was auto-generated
+            return {'id': entity.key.id_or_name}
+        elif op_type == 'update':
+            key = self.datastore_client.key(kind, operation['id'])
+            entity = self.datastore_client.get(key)
+            if entity:
+                entity.update(operation['data'])
+                self.datastore_client.put(entity)
+                return {'id': entity.key.id_or_name}
+            raise exc.DBAPIError("Entity not found for update.", {}, None)
+        elif op_type == 'delete':
+            key = self.datastore_client.key(kind, operation['id'])
+            self.datastore_client.delete(key)
+            return {'id': operation['id']}
+        elif op_type == 'drop_kind':
+            # Warning: This is a highly destructive operation!
+            # It will delete ALL entities of the specified kind.
+            # In a real app, you'd likely have stricter controls or confirmation.
+            query = self.datastore_client.query(kind=kind)
+            keys_to_delete = [entity.key for entity in query.fetch()]
+            if keys_to_delete:
+                self.datastore_client.delete_multi(keys_to_delete)
+            return {'status': f'Deleted all entities of kind: {kind}'}
+        elif op_type == 'create_kind':
+            # Datastore is schemaless, so 'create_table' is a no-op for actual schema.
+            # It mainly confirms the 'kind' name can be used.
+            return {'status': f'Kind {kind} acknowledged. No schema created.'}
+        else:
+            raise exc.DBAPIError(f"Unsupported Datastore operation: {op_type}", {}, None)
+
+
+class CloudDatastoreDialect(default.DefaultDialect):
+    """
+    SQLAlchemy dialect for Google Cloud Datastore.
+    """
+    name = 'datastore'
+    driver = 'google'
+
+    # Specifies the compiler and execution context classes to use
+    preparer = default.IdentifierPreparer
+    statement_compiler = DatastoreCompiler
+    type_compiler = DatastoreTypeCompiler
+    execution_context_cls = DatastoreExecutionContext
+
+    # Datastore does not have AUTOCOMMIT, explicit transactions are used
+    # or mutations are atomic by default.
+    supports_alter = False
+    supports_pk_autoincrement = True # Datastore auto-generates IDs if not provided
+    supports_sequences = False
+    supports_comments = False
+    supports_sane_rowcount = False # Not easily available in Datastore
+    supports_schemas = False
+    supports_foreign_keys = False
+    supports_check_constraints = False
+    supports_unique_constraint_initially_deferred = False
+    supports_unicode_statements = True
+    supports_unicode_binds = True
+    returns_unicode_strings = True
+    description_encoding = None
+
+    default_paramstyle = 'named' # Datastore client uses named parameters for queries
+
+    # Required for connection. The URL format will be 'datastore:///?project_id=<your-project-id>'
+    @classmethod
+    def dbapi(cls):
+        """
+        Return the DBAPI 2.0 driver.
+        In this case, it's the google.cloud.datastore client.
+        """
+        return datastore
+
+    def create_connect_args(self, url):
+        """
+        Parses the connection URL and returns args for the DBAPI connect function.
+        URL format: datastore:///?project_id=<your_project_id>&namespace=<your_namespace>
+        """
+        opts = url.query
+        project_id = opts.get('project_id')
+        namespace = opts.get('namespace')
+
+        if not project_id:
+            raise exc.ArgumentError("project_id is required for Datastore connection string.")
+
+        # The 'connect' function in our DBAPI is just the Datastore client constructor
+        return [], {'project': project_id, 'namespace': namespace}
+
+    def do_ping(self, dbapi_connection):
+        """
+        Performs a simple operation to check if the connection is still alive.
+        """
+        try:
+            # Try to get a simple entity or list kinds to verify connectivity
+            # This is a very basic ping. A more robust one might try a small query.
+            dbapi_connection.get_default_project()
+            return True
+        except Exception:
+            return False
+
+    def get_table_names(self, connection, schema=None, **kw):
+        """
+        Returns a list of 'kinds' (which are analogous to table names in Datastore).
+        """
+        kinds = set()
+        # This is a bit tricky as Datastore doesn't have a direct 'list all kinds' API.
+        # You often need to query the __Stat_Kind__ entities to find them.
+        # This example uses a simplified approach that might not be comprehensive.
+        # A more robust approach would query __Stat_Kind__ or iterate through metadata.
+        # For this example, we'll return an empty list or rely on explicit table definitions.
+        # If you know the kinds beforehand, you might pass them in config or load from a schema file.
+
+        # Example of getting kinds from __Stat_Kind__ (requires appropriate indexes):
+        client = connection.connection # This is our datastore.Client instance
+        try:
+            stat_query = client.query(kind='__Stat_Kind__')
+            # Order by and distinct on 'kind_name' for better results, if supported by indexes
+            # This is a simplified approach, direct 'fetch' is usually better for small stats
+            for entity in stat_query.fetch():
+                if 'kind_name' in entity:
+                    kinds.add(entity['kind_name'])
+        except Exception as e:
+            # Handle cases where __Stat_Kind__ is not accessible or indexes are missing
+            print(f"Warning: Could not retrieve kinds from __Stat_Kind__: {e}")
+            pass
+
+        return sorted(list(kinds))
+
+    def get_columns(self, connection, table_name, schema=None, **kw):
+        """
+        Datastore is schemaless, so columns are not explicitly defined.
+        This method would typically inspect existing entities to infer properties.
+        This is a complex operation and often not fully reliable without
+        pre-defined schema information.
+        For this basic dialect, we'll return an empty list.
+        """
+        # In a real-world scenario, you might have a mechanism to define/infer schema
+        # or rely on application-level schema definitions.
+        return []
+
+    def get_pk_constraint(self, connection, table_name, schema=None, **kw):
+        """
+        Datastore entities inherently have a primary key (the Key object),
+        which is essentially the entity's ID.
+        """
+        # Assume 'id' is the primary key column name in the SQLAlchemy model
+        return {'constrained_columns': ['id'], 'name': 'primary_key'}
+
+    def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+        """
+        Datastore does not support foreign keys in the traditional relational sense.
+        Relationships are usually modeled via ancestor paths or by storing keys of related entities.
+        """
+        return []
+
+    def get_indexes(self, connection, table_name, schema=None, **kw):
+        """
+        Datastore uses automatic and composite indexes.
+        Retrieving them programmatically is complex via the API (usually done via gcloud commands or Console).
+        This dialect will return an empty list.
+        """
+        return []
+

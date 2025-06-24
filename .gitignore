@@ -1,0 +1,15 @@
+*__pycache__
+*.class
+*.pyc
+*.arrow
+*.jar
+*.lst
+.vscode
+.venv
+build
+*._*
+*.ipynb
+*._.*
+.DS_Store
+test_credentials.json
+sqlalchemy_gcp_datastore.egg-info
