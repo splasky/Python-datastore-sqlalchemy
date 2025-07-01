@@ -6,3 +6,4 @@ pytz==2025.2
 pyarrow==20.0.0
 pandas==2.2.3
 setuptools==80.9.0
+google-cloud-bigquery==3.34.0
