@@ -21,21 +21,6 @@ from .base import CloudDatastoreDialect
 
 __version__ = "0.0.1"
 
-# from .base import (
-#     DateTime,
-#     Key,
-#     Bool,
-#     Float,
-#     Int,
-#     UniCode,
-#     Bytes,
-#     GeoPoint,
-#     NoneType,
-#     List,
-# 	Entity,
-# 	Dict
-# )
-
 __all__ = [
     "__version__",
     "CloudDatastoreDialect",

@@ -461,7 +461,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
             connection = connection.connect()
         client = connection.connection._client
         query = client.query(kind=table_name)
-        ancestor_key = client.key("__kind__", "APIKey")
+        ancestor_key = client.key("__kind__", table_name)
         query = client.query(kind="__property__", ancestor=ancestor_key)
         properties = list(query.fetch())
         columns = []
@@ -481,4 +481,3 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def do_execute(self, cursor, statement, parameters, context=None):
         # Implement logic to execute a SQL statement
         cursor.execute(statement, parameters)
-        return cursor.fetchall()
