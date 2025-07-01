@@ -1,0 +1,3 @@
+[submodule "pep249"]
+	path = pep249
+	url = https://github.com/thesketh/pep249.git
