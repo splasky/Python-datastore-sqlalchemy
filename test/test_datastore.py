@@ -21,7 +21,10 @@ conn = engine.connect()
 # """))
 
 # Insert data (using parameterized query to prevent SQL injection)
-conn.execute(text("INSERT INTO users (name, age) VALUES ('Alice', 30)"))
+conn.execute(
+    text("INSERT INTO users (name, age) VALUES (:name, :age)"),
+    {"name": "Alice", "age": 30}
+)
 conn.execute(text("INSERT INTO users (name, age) VALUES ('Bob', 25)"))
 
 # Commit the transaction

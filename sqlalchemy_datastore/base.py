@@ -55,7 +55,7 @@ class DatastoreCompiler(compiler.SQLCompiler):
         # A very simplified approach. In a real dialect, this would
         # involve much more complex parsing of WHERE clauses, ORDER BY, LIMIT, etc.
         from_obj = select_stmt.froms[0]
-        kind = from_obj.element.name # Assumes a single table and its name is the 'kind'
+        kind = from_obj.name # Assumes a single table and its name is the 'kind'
 
         if select_stmt._simple_int_clause is not None:
             # Handle primary key lookups if a specific ID is queried
@@ -65,7 +65,7 @@ class DatastoreCompiler(compiler.SQLCompiler):
                 if col.primary_key:
                     pk_column = col
                     break
-            if pk_column:
+            if pk_column is not None:
                 # Find the primary key value from the WHERE clause
                 # This is a very naive way to get the ID for a direct lookup.
                 # A proper implementation would parse the expression tree.
@@ -260,110 +260,6 @@ class DatastoreTypeCompiler(compiler.GenericTypeCompiler):
         return None # Datastore handles dicts/lists directly (as properties or embedded entities)
 
 
-class DatastoreExecutionContext(default.DefaultExecutionContext):
-    """
-    Execution context for Datastore operations.
-    This is where the actual calls to the `google.cloud.datastore` client happen.
-    """
-    def __init__(self, dialect, connection, dbapi_connection, **kw):
-        super().__init__(**kw)
-        self.datastore_client = dialect._client  # The Datastore client instance 
-
-    def fire_sequence(self, sequence, type_):
-        """
-        Datastore uses auto-generated IDs, so sequences are not directly applicable
-        in the traditional SQL sense.
-        """
-        return None
-
-    def create_cursor(self):
-        """
-        Datastore operations don't use cursors in the traditional SQL sense.
-        This method will return a dummy object or None if not needed for a specific op.
-        """
-        return None
-
-    def execute_string(self, text, **kw):
-        """
-        This method is called when the compiler returns the compiled SQL.
-        In our case, the compiler returns a dict representing the Datastore operation.
-        """
-        operation = text # The 'text' here is actually the dictionary from our compiler
-
-        op_type = operation['type']
-        kind = operation['kind']
-
-        if op_type == 'query':
-            datastore_query = self.datastore_client.query(kind=kind)
-
-            # Apply filters
-            for prop, op, val in operation['filters']:
-                datastore_query.add_filter(prop, op, val)
-
-            # Apply order by
-            for prop, direction in operation['order_by']:
-                if direction == 'ASCENDING':
-                    datastore_query.order = [prop]
-                else:
-                    datastore_query.order = [f'-{prop}']
-
-            # Apply limit and offset
-            limit = operation['limit']
-            offset = operation['offset']
-
-            results = []
-            for entity in datastore_query.fetch(limit=limit, offset=offset):
-                # Convert Datastore Entity to a dictionary for SQLAlchemy result rows
-                row_data = dict(entity)
-                # Include the entity's ID (key.id_or_name)
-                row_data['id'] = entity.key.id_or_name
-                results.append(row_data)
-            return results
-        elif op_type == 'lookup':
-            # Direct lookup by ID
-            key_id = operation['id']
-            key = self.datastore_client.key(kind, key_id)
-            entity = self.datastore_client.get(key)
-            if entity:
-                row_data = dict(entity)
-                row_data['id'] = entity.key.id_or_name
-                return [row_data]
-            return []
-        elif op_type == 'insert':
-            entity = datastore.Entity(self.datastore_client.key(kind, operation['key_name'])
-                                      if operation['key_name'] else self.datastore_client.key(kind))
-            entity.update(operation['data'])
-            self.datastore_client.put(entity)
-            # Return the key of the inserted entity, especially if ID was auto-generated
-            return {'id': entity.key.id_or_name}
-        elif op_type == 'update':
-            key = self.datastore_client.key(kind, operation['id'])
-            entity = self.datastore_client.get(key)
-            if entity:
-                entity.update(operation['data'])
-                self.datastore_client.put(entity)
-                return {'id': entity.key.id_or_name}
-            raise exc.DBAPIError("Entity not found for update.", {}, None)
-        elif op_type == 'delete':
-            key = self.datastore_client.key(kind, operation['id'])
-            self.datastore_client.delete(key)
-            return {'id': operation['id']}
-        elif op_type == 'drop_kind':
-            # Warning: This is a highly destructive operation!
-            # It will delete ALL entities of the specified kind.
-            # In a real app, you'd likely have stricter controls or confirmation.
-            query = self.datastore_client.query(kind=kind)
-            keys_to_delete = [entity.key for entity in query.fetch()]
-            if keys_to_delete:
-                self.datastore_client.delete_multi(keys_to_delete)
-            return {'status': f'Deleted all entities of kind: {kind}'}
-        elif op_type == 'create_kind':
-            # Datastore is schemaless, so 'create_table' is a no-op for actual schema.
-            # It mainly confirms the 'kind' name can be used.
-            return {'status': f'Kind {kind} acknowledged. No schema created.'}
-        else:
-            raise exc.DBAPIError(f"Unsupported Datastore operation: {op_type}", {}, None)
-
 class CloudDatastoreDialect(default.DefaultDialect):
     """
     SQLAlchemy dialect for Google Cloud Datastore.
@@ -375,7 +271,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     preparer = default.DefaultDialect.preparer
     statement_compiler = DatastoreCompiler
     type_compiler_cls = DatastoreTypeCompiler
-    execution_ctx_cls = DatastoreExecutionContext
+    execution_ctx_cls = default.DefaultExecutionContext
 
     # Datastore does not have AUTOCOMMIT, explicit transactions are used
     # or mutations are atomic by default.

@@ -71,7 +71,8 @@ class ProgrammingError(DatabaseError):
 class Cursor:
 
     def __init__(self, connection):
-        self._datastore_client = connection
+        self.connection = connection
+        self._datastore_client = connection._client
         self.rowcount = -1
         self.arraysize = 1
         self._query_data = None
@@ -84,56 +85,87 @@ class Cursor:
     def execute(self, operation: Optional[dict], parameters):
         print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
         self.compiled = operation 
-        self._execute()
+        self._execute(operation, **parameters)
         self.description = []
 
-    def _execute(self):
+    def _execute(self, operation, **kw):
         """
-        No cursor here! We interact directly with the datastore client.
+        This method is called when the compiler returns the compiled SQL.
+        In our case, the compiler returns a dict representing the Datastore operation.
         """
-        compiled = self.compiled
-        operation = compiled.get('operation')
-        
-        if operation == 'insert':
-            kind = compiled['kind']
-            data = compiled['data']
-            
-            # Create a new entity
-            key = self._datastore_client.key(kind)
-            entity = datastore.Entity(key=key)
-            entity.update(data)
-            
-            self._datastore_client.put(entity)
-            print(f"Inserted entity into kind '{kind}' with data: {data}")
-            # Simulate a result set indicating success, or return the key
-            self._result = [([{'inserted_id': key.id}],)] # Placeholder for Result object
-        
-        elif operation == 'select':
-            params = compiled['params']
-            query = self._datastore_client.query(kind=params['kind'])
-            
-            # Apply filters, order_by, etc. based on params
-            # query.add_filter('property', '=', value)
-            if 'projection' in params and params['projection']: # Select specific columns
-                query.add_projection(params['projection'])
+        op_type = operation['type']
+        kind = operation['kind']
 
-            results = list(query.fetch()) # Execute the query
-            print(f"Fetched {len(results)} entities from kind '{params['kind']}'")
-            
-            # Convert Datastore entities into a format SQLAlchemy Result can handle
-            rows_for_sqla_result = []
-            for entity in results:
-                row_data = tuple(entity.get(col_name) for col_name in params['projection']) # Or all properties
-                rows_for_sqla_result.append(row_data)
-            
-            # Store the results for SQLAlchemy to fetch
-            # self._rowcount = len(rows_for_sqla_result) # Optional: if you need rowcount
-            self._result_set = iter(rows_for_sqla_result) # Iterator of tuple rows
-            
+        if op_type == 'query':
+            datastore_query = self._datastore_client.query(kind=kind)
+
+            # Apply filters
+            for prop, op, val in operation['filters']:
+                datastore_query.add_filter(prop, op, val)
+
+            # Apply order by
+            for prop, direction in operation['order_by']:
+                if direction == 'ASCENDING':
+                    datastore_query.order = [prop]
+                else:
+                    datastore_query.order = [f'-{prop}']
+
+            # Apply limit and offset
+            limit = operation['limit']
+            offset = operation['offset']
+
+            results = []
+            for entity in datastore_query.fetch(limit=limit, offset=offset):
+                # Convert Datastore Entity to a dictionary for SQLAlchemy result rows
+                row_data = dict(entity)
+                # Include the entity's ID (key.id_or_name)
+                row_data['id'] = entity.key.id_or_name
+                results.append(row_data)
+            return results
+        elif op_type == 'lookup':
+            # Direct lookup by ID
+            key_id = operation['id']
+            key = self._datastore_client.key(kind, key_id)
+            entity = self._datastore_client.get(key)
+            if entity:
+                row_data = dict(entity)
+                row_data['id'] = entity.key.id_or_name
+                return [row_data]
+            return []
+        elif op_type == 'insert':
+            entity = datastore.Entity(self._datastore_client.key(kind, operation['key_name'])
+                                      if operation['key_name'] else self._datastore_client.key(kind))
+            entity.update(operation['data'])
+            self._datastore_client.put(entity)
+            # Return the key of the inserted entity, especially if ID was auto-generated
+            return {'id': entity.key.id_or_name}
+        elif op_type == 'update':
+            key = self._datastore_client.key(kind, operation['id'])
+            entity = self._datastore_client.get(key)
+            if entity:
+                entity.update(operation['data'])
+                self._datastore_client.put(entity)
+                return {'id': entity.key.id_or_name}
+            raise OperationalError("Entity not found for update.", {}, None)
+        elif op_type == 'delete':
+            key = self._datastore_client.key(kind, operation['id'])
+            self._datastore_client.delete(key)
+            return {'id': operation['id']}
+        elif op_type == 'drop_kind':
+            # Warning: This is a highly destructive operation!
+            # It will delete ALL entities of the specified kind.
+            # In a real app, you'd likely have stricter controls or confirmation.
+            query = self._datastore_client.query(kind=kind)
+            keys_to_delete = [entity.key for entity in query.fetch()]
+            if keys_to_delete:
+                self._datastore_client.delete_multi(keys_to_delete)
+            return {'status': f'Deleted all entities of kind: {kind}'}
+        elif op_type == 'create_kind':
+            # Datastore is schemaless, so 'create_table' is a no-op for actual schema.
+            # It mainly confirms the 'kind' name can be used.
+            return {'status': f'Kind {kind} acknowledged. No schema created.'}
         else:
-            raise NotImplementedError(
-                f"Datastore operation '{operation}' not yet implemented in execution context."
-            )
+            raise OperationalError(f"Unsupported Datastore operation: {op_type}", {}, None)
     
     def fetchall(self):
         if self._closed:

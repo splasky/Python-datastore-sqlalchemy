@@ -1,27 +1,22 @@
 from sqlalchemy import create_engine, text
+from sqlalchemy import Column, Integer, String, ARRAY
+from sqlalchemy.orm import declarative_base
+
 import os
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = './test/credentials.json'
+
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
 
 # engine = create_engine('datastore://test-api-2')
 # print("Dialect name:", engine.dialect.name)
 
-
-# with engine.connect() as conn:
-#     result = conn.execute(text("SELECT * FROM APIKey"))
-#     for row in result:
-#         print(row)
-
-
-from sqlalchemy import Column, Integer, String, ARRAY
-from sqlalchemy.orm import declarative_base
-
 Base = declarative_base()
-engine = create_engine('datastore://project_id=test-api-2', echo=True)
+engine = create_engine("datastore://project_id=test-api-2", echo=True)
+
 
 class APIKey(Base):
-    __tablename__ = 'APIKey' # This will be the 'kind' in Datastore
-    id = Column(Integer, primary_key=True) # Datastore ID will map here
-    access = Column(ARRAY(String)) # Array of strings for access
+    __tablename__ = "APIKey"  # This will be the 'kind' in Datastore
+    id = Column(Integer, primary_key=True)  # Datastore ID will map here
+    access = Column(ARRAY(String))  # Array of strings for access
     counts = Column(Integer)
     description = Column(String)
     value = Column(String)
@@ -29,8 +24,10 @@ class APIKey(Base):
     def __repr__(self):
         return f"<APIKey(id={self.id}, access='{self.access}', counts='{self.counts}', description='{self.description}', value='{self.value}')>"
 
+
 # Example of usage:
 from sqlalchemy.orm import sessionmaker
+
 Session = sessionmaker(bind=engine)
 session = Session()
 
@@ -58,3 +55,8 @@ print(f"Found: {apikey}")
 
 # # Drop kind (DANGEROUS: deletes all entities of 'User' kind)
 # # Base.metadata.tables['User'].drop(engine)
+
+# with engine.connect() as conn:
+#     result = conn.execute(text("SELECT * FROM APIKey"))
+#     for row in result:
+#         print(row)
