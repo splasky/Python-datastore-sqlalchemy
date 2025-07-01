@@ -12,4 +12,4 @@ build
 *._.*
 .DS_Store
 test_credentials.json
-sqlalchemy_gcp_datastore.egg-info
+*.egg-info
