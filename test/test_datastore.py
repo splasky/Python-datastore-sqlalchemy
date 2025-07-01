@@ -1,35 +1,39 @@
-import datastore_dbapi
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import declarative_base
+import os
 
-# Connect to SQLite (in-memory database for this example)
-conn = datastore_dbapi.connect("datastore://project_id=test-api-2")
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
 
-# Create a cursor object
-cursor = conn.cursor()
+Base = declarative_base()
+engine = create_engine('datastore://project_id=test-api-2', echo=True)
+conn = engine.connect()
 
-# Create a table
-cursor.execute("""
-    CREATE TABLE users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        age INTEGER
-    )
-""")
+# no cursor in datastore
+# cursor = conn.cursor()
+
+# Datastore has no create table command 
+# conn.execute(text("""
+#     CREATE TABLE users (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         name TEXT,
+#         age INTEGER
+#     )
+# """))
 
 # Insert data (using parameterized query to prevent SQL injection)
-cursor.execute("INSERT INTO users (name, age) VALUES (?, ?)", ("Alice", 30))
-cursor.execute("INSERT INTO users (name, age) VALUES (?, ?)", ("Bob", 25))
+conn.execute(text("INSERT INTO users (name, age) VALUES ('Alice', 30)"))
+conn.execute(text("INSERT INTO users (name, age) VALUES ('Bob', 25)"))
 
 # Commit the transaction
 conn.commit()
 
 # Query the database
-cursor.execute("SELECT id, name, age FROM users")
-rows = cursor.fetchall()
+result = conn.execute(text("SELECT id, name, age FROM users"))
+rows = result.fetchall()
 
 # Process results
 for row in rows:
     print(f"ID: {row[0]}, Name: {row[1]}, Age: {row[2]}")
 
 # Clean up
-cursor.close()
 conn.close()

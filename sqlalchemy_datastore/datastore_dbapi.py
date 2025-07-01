@@ -17,12 +17,14 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+from google.cloud import datastore
+
 apilevel = "2.0"
 
 # Threads may share the module and connections, but not cursors.
 threadsafety = 2
 
-paramstyle = "pyformat"
+paramstyle = "named"
 
 
 # Required exceptions
@@ -65,13 +67,6 @@ class ProgrammingError(DatabaseError):
     """DB-API exception raised for programming errors."""
 
 
-import subprocess
-import json
-import pandas as pd
-
-project_id = "test-api-2"
-credentials_path = "test_credentials.json"
-
 class Cursor:
 
     def __init__(self, connection):
@@ -81,41 +76,75 @@ class Cursor:
         self._query_data = None
         self._query_rows = None
         self._closed = False
-        self.last_result = None
+        self.description = None
 
-    def execute(self, sql, params=None):
 
-        print(f"[DataStore DBAPI] Executing: {sql}")
-        if self.connection._transaction is None:
-            self.connection.begin()
-        from importlib.resources import files
+    def execute(self, operation ,parameters):
+        print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
 
-        jar_path = files("sqlalchemy_datastore").joinpath("gql-query.jar")
-        print(jar_path)
-        cmd = [
-            "java",
-            "-jar",
-            jar_path,
-            project_id,
-            credentials_path,
-            sql,
-        ]
-        # calling GQL
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        df = pd.DataFrame(
-            [json.loads(line) for line in res.stdout.strip().splitlines()]
-        )
-        print(df.head())
+        self.description = []
+
+    def _execute(self, is_delete=False):
+        """
+        No cursor here! We interact directly with the datastore client.
+        """
+        compiled = self.compiled.process(self.compiled.statement) # Get the output from your compiler
+
+        operation = compiled.get('operation')
+        
+        if operation == 'insert':
+            kind = compiled['kind']
+            data = compiled['data']
+            
+            # Create a new entity
+            key = self._datastore_client.key(kind)
+            entity = datastore.Entity(key=key)
+            entity.update(data)
+            
+            self._datastore_client.put(entity)
+            print(f"Nya~! Inserted entity into kind '{kind}' with data: {data}")
+            # Simulate a result set indicating success, or return the key
+            self._result = [([{'inserted_id': key.id}],)] # Placeholder for Result object
+        
+        elif operation == 'select':
+            params = compiled['params']
+            query = self._datastore_client.query(kind=params['kind'])
+            
+            # Apply filters, order_by, etc. based on params
+            # query.add_filter('property', '=', value)
+            if 'projection' in params and params['projection']: # Select specific columns
+                query.add_projection(params['projection'])
+
+            results = list(query.fetch()) # Execute the query
+            print(f"Nya~! Fetched {len(results)} entities from kind '{params['kind']}'")
+            
+            # Convert Datastore entities into a format SQLAlchemy Result can handle
+            rows_for_sqla_result = []
+            for entity in results:
+                row_data = tuple(entity.get(col_name) for col_name in params['projection']) # Or all properties
+                rows_for_sqla_result.append(row_data)
+            
+            # Store the results for SQLAlchemy to fetch
+            # self._rowcount = len(rows_for_sqla_result) # Optional: if you need rowcount
+            self._result_set = iter(rows_for_sqla_result) # Iterator of tuple rows
+            
+        else:
+            raise NotImplementedError(
+                f"Nya~! Datastore operation '{operation}' not yet implemented in execution context."
+            )
+        
+        # This execute method in a real dialect should return `self._result_set`
+        # for `Result` object to consume. Or it might leave it in a variable for `fetch_row`.
 
     def fetchall(self):
-        return self.last_result
+        return self.description
 
     def close(self):
         self.connection = None
 
     def fetchone(self):
-        if self.last_result:
-            return self.last_result.pop(0)
+        if self.description and len(self.description) > 0: 
+            return self.description.pop(0)
         return None
 
 
@@ -129,23 +158,12 @@ class Connection:
         return Cursor(self)
 
     def begin(self):
-        if self._transaction is None:
-            self._transaction = self._client.transaction()
-            self._transaction.begin()
+        pass
 
     def commit(self):
-        if self._transaction:
-            self._transaction.commit()
-            self._transaction = None
-        else:
-            raise Exception("No active transaction")
+        pass
 
     def rollback(self):
-        # if self._transaction:
-        #     self._transaction.rollback()
-        #     self._transaction = None
-        # else:
-        #     raise Exception("No active transaction")
         pass
 
 

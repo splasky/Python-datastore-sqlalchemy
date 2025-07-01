@@ -21,144 +21,12 @@ from sqlalchemy.dialects import registry
 from sqlalchemy.sql.compiler import SQLCompiler
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy import Engine
+from urllib.parse import parse_qs
 
 from . import datastore_dbapi
 from ._helpers import create_datastore_client
 from ._types import _get_sqla_column_type
 from .parse_url import parse_url
-
-
-class GoogleCloudDatastoreDialectCompiler(SQLCompiler):
-    def visit_select(self, select):
-        # Generate custom SQL for SELECT statements
-        return "SELECT * FROM " + select.froms[0].name
-
-
-class GoogleCloudDatastoreDialect(DefaultDialect):
-    name = "datastore"
-    driver = "datastore"
-    supports_sane_rowcount = True
-    supports_sane_multi_rowcount = True
-    supports_unicode_binds = True
-    supports_native_decimal = False
-    supports_empty_insert = False
-    statement_compiler = GoogleCloudDatastoreDialectCompiler
-
-    @classmethod
-    def get_dbapi(cls):
-        """
-        Return the DBAPI module for this dialect.
-        """
-        return datastore_dbapi
-
-    @classmethod
-    def import_dbapi(cls):
-        return cls.get_dbapi()
-
-    def __init__(
-        self,
-        arraysize=5000,
-        credentials_path=None,
-        billing_project_id=None,
-        location=None,
-        credentials_info=None,
-        credentials_base64=None,
-        list_tables_page_size=1000,
-        *args,
-        **kwargs,
-    ):
-        super(GoogleCloudDatastoreDialect, self).__init__(*args, **kwargs)
-        self.arraysize = arraysize
-        self.credentials_path = credentials_path
-        self.credentials_info = credentials_info
-        self.credentials_base64 = credentials_base64
-        self.project_id = None
-        self.billing_project_id = billing_project_id
-        self.location = location
-        self.identifier_preparer = self.preparer(self)
-        self.dataset_id = None
-        self.list_tables_page_size = list_tables_page_size
-
-    def create_connect_args(self, url):
-        (
-            self.project_id,
-            location,
-            dataset_id,
-            arraysize,
-            credentials_path,
-            credentials_base64,
-            provided_job_config,
-            list_tables_page_size,
-            user_supplied_client,
-        ) = parse_url(url)
-
-        self.arraysize = arraysize or self.arraysize
-        self.list_tables_page_size = list_tables_page_size or self.list_tables_page_size
-        self.location = location or self.location
-        self.credentials_path = credentials_path or self.credentials_path
-        self.credentials_base64 = credentials_base64 or self.credentials_base64
-        self.dataset_id = dataset_id
-        self.billing_project_id = self.billing_project_id or self.project_id
-
-        if user_supplied_client:
-            # The user is expected to supply a client with
-            # create_engine('...', connect_args={'client': ds_client})
-            return ([], {})
-        else:
-            client = create_datastore_client(
-                credentials_path=self.credentials_path,
-                credentials_info=self.credentials_info,
-                credentials_base64=self.credentials_base64,
-                project_id=self.billing_project_id,
-            )
-            # If the user specified `bigquery://` we need to set the project_id
-            # from the client
-            self.project_id = self.project_id or client.project
-            self.billing_project_id = self.billing_project_id or client.project
-            return ([], {"client": client})
-
-    def get_table_names(self, connection, schema=None, **kw):
-        # Implement logic to retrieve table names from the database
-        if isinstance(connection, Engine):
-            connection = connection.connect()
-
-        client = connection.connection._client
-        query = client.query(kind="__kind__")
-        query = query.keys_only()
-        kinds = list(query.fetch())
-        result = []
-        for kind in kinds:
-            result.append(kind.key.name)
-        return result
-
-    def get_columns(self, connection, table_name, schema=None, **kw):
-        # Implement logic to retrieve column information from the database
-        if isinstance(connection, Engine):
-            connection = connection.connect()
-        client = connection.connection._client
-        query = client.query(kind=table_name)
-        ancestor_key = client.key("__kind__", "APIKey")
-        query = client.query(kind="__property__", ancestor=ancestor_key)
-        properties = list(query.fetch())
-        columns = []
-        # TODO: use _types.get_columns instead
-        for property in properties:
-            columns.append(
-                {
-                    "name": property.key.name,
-                    "type": _get_sqla_column_type(property.get("property_representation")[0]
-                                                  if property.get("property_representation", None) is not None else "STRING"),
-                    "nullable": True,
-                    "comment": "",
-                    "default": None,
-                }
-            )
-
-    def do_execute(self, cursor, statement, parameters, context=None):
-        # Implement logic to execute a SQL statement
-        cursor.execute(statement, parameters)
-        return cursor.fetchall()
-
 
 registry.register("my_custom_dialect", "my_custom_dialect", "dialect")
 
@@ -395,8 +263,8 @@ class DatastoreExecutionContext(default.DefaultExecutionContext):
     This is where the actual calls to the `google.cloud.datastore` client happen.
     """
     def __init__(self, dialect, connection, dbapi_connection, **kw):
-        super().__init__(dialect, connection, dbapi_connection, **kw)
-        self.datastore_client = dbapi_connection
+        super().__init__(**kw)
+        self.datastore_client = dialect._client  # The Datastore client instance 
 
     def fire_sequence(self, sequence, type_):
         """
@@ -493,7 +361,6 @@ class DatastoreExecutionContext(default.DefaultExecutionContext):
         else:
             raise exc.DBAPIError(f"Unsupported Datastore operation: {op_type}", {}, None)
 
-
 class CloudDatastoreDialect(default.DefaultDialect):
     """
     SQLAlchemy dialect for Google Cloud Datastore.
@@ -502,7 +369,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     driver = 'google'
 
     # Specifies the compiler and execution context classes to use
-    preparer = default.IdentifierPreparer
+    preparer = default.DefaultDialect.preparer
     statement_compiler = DatastoreCompiler
     type_compiler = DatastoreTypeCompiler
     execution_context_cls = DatastoreExecutionContext
@@ -523,7 +390,32 @@ class CloudDatastoreDialect(default.DefaultDialect):
     returns_unicode_strings = True
     description_encoding = None
 
-    default_paramstyle = 'named' # Datastore client uses named parameters for queries
+    paramstyle = 'named' # Datastore client uses named parameters for queries
+
+    def __init__(
+        self,
+        arraysize=5000,
+        credentials_path=None,
+        billing_project_id=None,
+        location=None,
+        credentials_info=None,
+        credentials_base64=None,
+        list_tables_page_size=1000,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.arraysize = arraysize
+        self.credentials_path = credentials_path
+        self.credentials_info = credentials_info
+        self.credentials_base64 = credentials_base64
+        self.project_id = None
+        self.billing_project_id = billing_project_id
+        self.location = location
+        self.identifier_preparer = self.preparer(self)
+        self.dataset_id = None
+        self.list_tables_page_size = list_tables_page_size
+        self._client = None
 
     # Required for connection. The URL format will be 'datastore:///?project_id=<your-project-id>'
     @classmethod
@@ -532,22 +424,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         Return the DBAPI 2.0 driver.
         In this case, it's the google.cloud.datastore client.
         """
-        return datastore
-
-    def create_connect_args(self, url):
-        """
-        Parses the connection URL and returns args for the DBAPI connect function.
-        URL format: datastore:///?project_id=<your_project_id>&namespace=<your_namespace>
-        """
-        opts = url.query
-        project_id = opts.get('project_id')
-        namespace = opts.get('namespace')
-
-        if not project_id:
-            raise exc.ArgumentError("project_id is required for Datastore connection string.")
-
-        # The 'connect' function in our DBAPI is just the Datastore client constructor
-        return [], {'project': project_id, 'namespace': namespace}
+        return datastore_dbapi
 
     def do_ping(self, dbapi_connection):
         """
@@ -561,45 +438,33 @@ class CloudDatastoreDialect(default.DefaultDialect):
         except Exception:
             return False
 
-    def get_table_names(self, connection, schema=None, **kw):
-        """
-        Returns a list of 'kinds' (which are analogous to table names in Datastore).
-        """
-        kinds = set()
-        # This is a bit tricky as Datastore doesn't have a direct 'list all kinds' API.
-        # You often need to query the __Stat_Kind__ entities to find them.
-        # This example uses a simplified approach that might not be comprehensive.
-        # A more robust approach would query __Stat_Kind__ or iterate through metadata.
-        # For this example, we'll return an empty list or rely on explicit table definitions.
-        # If you know the kinds beforehand, you might pass them in config or load from a schema file.
+    # def get_table_names(self, connection, schema=None, **kw):
+    #     """
+    #     Returns a list of 'kinds' (which are analogous to table names in Datastore).
+    #     """
+    #     kinds = set()
+    #     # This is a bit tricky as Datastore doesn't have a direct 'list all kinds' API.
+    #     # You often need to query the __Stat_Kind__ entities to find them.
+    #     # This example uses a simplified approach that might not be comprehensive.
+    #     # A more robust approach would query __Stat_Kind__ or iterate through metadata.
+    #     # For this example, we'll return an empty list or rely on explicit table definitions.
+    #     # If you know the kinds beforehand, you might pass them in config or load from a schema file.
 
-        # Example of getting kinds from __Stat_Kind__ (requires appropriate indexes):
-        client = connection.connection # This is our datastore.Client instance
-        try:
-            stat_query = client.query(kind='__Stat_Kind__')
-            # Order by and distinct on 'kind_name' for better results, if supported by indexes
-            # This is a simplified approach, direct 'fetch' is usually better for small stats
-            for entity in stat_query.fetch():
-                if 'kind_name' in entity:
-                    kinds.add(entity['kind_name'])
-        except Exception as e:
-            # Handle cases where __Stat_Kind__ is not accessible or indexes are missing
-            print(f"Warning: Could not retrieve kinds from __Stat_Kind__: {e}")
-            pass
+    #     # Example of getting kinds from __Stat_Kind__ (requires appropriate indexes):
+    #     client = connection.connection # This is our datastore.Client instance
+    #     try:
+    #         stat_query = client.query(kind='__Stat_Kind__')
+    #         # Order by and distinct on 'kind_name' for better results, if supported by indexes
+    #         # This is a simplified approach, direct 'fetch' is usually better for small stats
+    #         for entity in stat_query.fetch():
+    #             if 'kind_name' in entity:
+    #                 kinds.add(entity['kind_name'])
+    #     except Exception as e:
+    #         # Handle cases where __Stat_Kind__ is not accessible or indexes are missing
+    #         print(f"Warning: Could not retrieve kinds from __Stat_Kind__: {e}")
+    #         pass
 
-        return sorted(list(kinds))
-
-    def get_columns(self, connection, table_name, schema=None, **kw):
-        """
-        Datastore is schemaless, so columns are not explicitly defined.
-        This method would typically inspect existing entities to infer properties.
-        This is a complex operation and often not fully reliable without
-        pre-defined schema information.
-        For this basic dialect, we'll return an empty list.
-        """
-        # In a real-world scenario, you might have a mechanism to define/infer schema
-        # or rely on application-level schema definitions.
-        return []
+    #     return sorted(list(kinds))
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """
@@ -624,3 +489,97 @@ class CloudDatastoreDialect(default.DefaultDialect):
         """
         return []
 
+    def create_connect_args(self, url):
+        (
+            self.project_id,
+            location,
+            dataset_id,
+            arraysize,
+            credentials_path,
+            credentials_base64,
+            provided_job_config,
+            list_tables_page_size,
+            user_supplied_client,
+        ) = parse_url(url)
+        """
+        Parses the connection URL and returns args for the DBAPI connect function.
+        URL format: datastore:///?project_id=<your_project_id>&namespace=<your_namespace>
+        """
+
+        self.arraysize = arraysize or self.arraysize
+        self.list_tables_page_size = list_tables_page_size or self.list_tables_page_size
+        self.location = location or self.location
+        self.credentials_path = credentials_path or self.credentials_path
+        self.credentials_base64 = credentials_base64 or self.credentials_base64
+        self.dataset_id = dataset_id
+        self.billing_project_id = self.billing_project_id or self.project_id
+
+        if user_supplied_client:
+            # The user is expected to supply a client with
+            # create_engine('...', connect_args={'client': ds_client})
+            return ([], {})
+        else:
+            client = create_datastore_client(
+                credentials_path=self.credentials_path,
+                credentials_info=self.credentials_info,
+                credentials_base64=self.credentials_base64,
+                project_id=self.billing_project_id,
+            )
+            # If the user specified `bigquery://` we need to set the project_id
+            # from the client
+            self.project_id = self.project_id or client.project
+            self.billing_project_id = self.billing_project_id or client.project
+
+        if not self.project_id:
+            raise exc.ArgumentError("project_id is required for Datastore connection string.")
+        self._client = client
+        return ([], {"client": client})
+
+    def get_table_names(self, connection, schema=None, **kw):
+        # Implement logic to retrieve table names from the database
+        if isinstance(connection, Engine):
+            connection = connection.connect()
+
+        client = connection.connection._client 
+        query = client.query(kind="__kind__")
+        query = query.keys_only()
+        kinds = list(query.fetch())
+        result = []
+        for kind in kinds:
+            result.append(kind.key.name)
+        return result
+
+    def get_columns(self, connection, table_name, schema=None, **kw):
+        """
+        Datastore is schemaless, so columns are not explicitly defined.
+        This method would typically inspect existing entities to infer properties.
+        This is a complex operation and often not fully reliable without
+        pre-defined schema information.
+        For this basic dialect, we'll return an empty list.
+        """
+        # Implement logic to retrieve column information from the database
+        if isinstance(connection, Engine):
+            connection = connection.connect()
+        client = connection.connection._client
+        query = client.query(kind=table_name)
+        ancestor_key = client.key("__kind__", "APIKey")
+        query = client.query(kind="__property__", ancestor=ancestor_key)
+        properties = list(query.fetch())
+        columns = []
+        # TODO: use _types.get_columns instead
+        for property in properties:
+            columns.append(
+                {
+                    "name": property.key.name,
+                    "type": _get_sqla_column_type(property.get("property_representation")[0]
+                                                  if property.get("property_representation", None) is not None else "STRING"),
+                    "nullable": True,
+                    "comment": "",
+                    "default": None,
+                }
+            )
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+        # Implement logic to execute a SQL statement
+        cursor.execute(statement, parameters)
+        return cursor.fetchall()
