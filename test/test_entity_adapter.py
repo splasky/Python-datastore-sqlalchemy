@@ -2,7 +2,7 @@ import subprocess
 import pyarrow.ipc as pa_ipc
 
 proc = subprocess.Popen(
-    ["java", "-jar", "target/gql-query.jar", "test-api-2", "./credentials.json", "SELECT name, email FROM APIKey"],
+    ["java", "-jar", "target/gql-query.jar", "test-api-2", "./test_credentials.json", "SELECT name, email FROM APIKey"],
     stdout=subprocess.PIPE
 )
 

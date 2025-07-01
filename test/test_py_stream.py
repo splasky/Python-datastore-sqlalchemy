@@ -7,7 +7,7 @@ cmd = [
     "--add-opens=java.base/java.nio=ALL-UNNAMED",
     "-jar", "target/gql-query.jar",
     "test-api-2",
-    "./credentials.json",
+    "./test_credentials.json",
     "SELECT * FROM APIKey"
 ]
 

@@ -10,7 +10,7 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
 # print("Dialect name:", engine.dialect.name)
 
 Base = declarative_base()
-engine = create_engine("datastore://project_id=test-api-2", echo=True)
+engine = create_engine("datastore://test-api-2", echo=True)
 
 
 class APIKey(Base):

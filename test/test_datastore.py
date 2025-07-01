@@ -5,7 +5,7 @@ import os
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
 
 Base = declarative_base()
-engine = create_engine('datastore://project_id=test-api-2', echo=True)
+engine = create_engine('datastore://test-api-2', echo=True)
 conn = engine.connect()
 
 # no cursor in datastore
