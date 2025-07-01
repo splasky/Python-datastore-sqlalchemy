@@ -18,6 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 from google.cloud import datastore
+from typing import Optional
 
 apilevel = "2.0"
 
@@ -70,26 +71,27 @@ class ProgrammingError(DatabaseError):
 class Cursor:
 
     def __init__(self, connection):
-        self.connection = connection
+        self._datastore_client = connection
         self.rowcount = -1
         self.arraysize = 1
         self._query_data = None
         self._query_rows = None
         self._closed = False
         self.description = None
+        self.compiled: Optional[dict] = None  # This will hold the compiled statement
+        self._closed = False
 
-
-    def execute(self, operation ,parameters):
+    def execute(self, operation: Optional[dict], parameters):
         print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
-
+        self.compiled = operation 
+        self._execute()
         self.description = []
 
-    def _execute(self, is_delete=False):
+    def _execute(self):
         """
         No cursor here! We interact directly with the datastore client.
         """
-        compiled = self.compiled.process(self.compiled.statement) # Get the output from your compiler
-
+        compiled = self.compiled
         operation = compiled.get('operation')
         
         if operation == 'insert':
@@ -102,7 +104,7 @@ class Cursor:
             entity.update(data)
             
             self._datastore_client.put(entity)
-            print(f"Nya~! Inserted entity into kind '{kind}' with data: {data}")
+            print(f"Inserted entity into kind '{kind}' with data: {data}")
             # Simulate a result set indicating success, or return the key
             self._result = [([{'inserted_id': key.id}],)] # Placeholder for Result object
         
@@ -116,7 +118,7 @@ class Cursor:
                 query.add_projection(params['projection'])
 
             results = list(query.fetch()) # Execute the query
-            print(f"Nya~! Fetched {len(results)} entities from kind '{params['kind']}'")
+            print(f"Fetched {len(results)} entities from kind '{params['kind']}'")
             
             # Convert Datastore entities into a format SQLAlchemy Result can handle
             rows_for_sqla_result = []
@@ -130,23 +132,27 @@ class Cursor:
             
         else:
             raise NotImplementedError(
-                f"Nya~! Datastore operation '{operation}' not yet implemented in execution context."
+                f"Datastore operation '{operation}' not yet implemented in execution context."
             )
-        
-        # This execute method in a real dialect should return `self._result_set`
-        # for `Result` object to consume. Or it might leave it in a variable for `fetch_row`.
-
+    
     def fetchall(self):
-        return self.description
-
-    def close(self):
-        self.connection = None
+        if self._closed:
+            raise Error("Cursor is closed.")
+        return list(self._result_set)
 
     def fetchone(self):
-        if self.description and len(self.description) > 0: 
-            return self.description.pop(0)
-        return None
+        if self._closed:
+            raise Error("Cursor is closed.")
+        try:
+            return next(self._result_set)
+        except StopIteration:
+            return None
 
+    def close(self):
+        self._closed = True
+        self.connection = None
+        self._result_set = iter([])
+        print("Cursor is closed.")
 
 class Connection:
 
