@@ -44,21 +44,24 @@ class DatastoreCompiler(compiler.SQLCompiler):
     Custom SQLCompiler for Google Cloud Datastore.
     Translates SQLAlchemy expressions into Datastore queries/operations.
     """
-    def visit_select(self, select, **kw):
+    def __init__(self, dialect, statement, *args, **kwargs):
+        super(DatastoreCompiler, self).__init__(dialect, statement, *args, **kwargs)
+
+    def visit_select(self, select_stmt, asfrom=False, **kw):
         """
         Handles SELECT statements.
         Datastore doesn't use SQL, so this translates to Datastore query objects.
         """
         # A very simplified approach. In a real dialect, this would
         # involve much more complex parsing of WHERE clauses, ORDER BY, LIMIT, etc.
-        from_obj = select.froms[0]
+        from_obj = select_stmt.froms[0]
         kind = from_obj.element.name # Assumes a single table and its name is the 'kind'
 
-        if select._simple_int_clause is not None:
+        if select_stmt._simple_int_clause is not None:
             # Handle primary key lookups if a specific ID is queried
             # This is a highly simplified example.
             pk_column = None
-            for col in select.selected_columns:
+            for col in select_stmt.selected_columns:
                 if col.primary_key:
                     pk_column = col
                     break
@@ -67,9 +70,9 @@ class DatastoreCompiler(compiler.SQLCompiler):
                 # This is a very naive way to get the ID for a direct lookup.
                 # A proper implementation would parse the expression tree.
                 pk_value = None
-                if select._where_criteria:
+                if select_stmt._where_criteria:
                     # Look for comparison like 'id = value'
-                    for criterion in select._where_criteria:
+                    for criterion in select_stmt._where_criteria:
                         if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
                             if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
                                 pk_value = criterion.right.value
@@ -85,15 +88,15 @@ class DatastoreCompiler(compiler.SQLCompiler):
             'kind': kind,
             'filters': [], # Store filters here if WHERE clauses were parsed
             'order_by': [],
-            'limit': select._limit,
-            'offset': select._offset,
+            'limit': select_stmt._limit,
+            'offset': select_stmt._offset,
             'type': 'query'
         }
 
         # Simplified handling of WHERE clause (only direct comparisons for now)
         # A real dialect needs to traverse the expression tree.
-        if select._where_criteria:
-            for criterion in select._where_criteria:
+        if select_stmt._where_criteria:
+            for criterion in select_stmt._where_criteria:
                 if hasattr(criterion, 'left') and hasattr(criterion, 'right') and hasattr(criterion, 'operator'):
                     col_name = criterion.left.name
                     op = criterion.operator.__name__ # e.g., 'eq', 'ne', 'gt', 'lt'
@@ -115,20 +118,20 @@ class DatastoreCompiler(compiler.SQLCompiler):
                         pass
 
         # Handle order by
-        for order in select._order_by_clause.clauses:
+        for order in select_stmt._order_by_clause.clauses:
             column_name = order.element.name
             direction = 'ASCENDING' if order.is_ascending else 'DESCENDING'
             query['order_by'].append((column_name, direction))
 
         return query
 
-    def visit_insert(self, insert, **kw):
+    def visit_insert(self, insert_stmt, **kw):
         """
         Handles INSERT statements.
         """
-        table = insert.table
+        table = insert_stmt.table
         kind = table.name
-        parameters = insert.parameters[0] # Assumes single parameter set for now
+        parameters = insert_stmt.parameters[0] # Assumes single parameter set for now
 
         # Datastore keys require a path. If primary key is provided, use it as ID.
         # Otherwise, Datastore generates one.
@@ -140,14 +143,14 @@ class DatastoreCompiler(compiler.SQLCompiler):
 
         return {'kind': kind, 'data': parameters, 'key_name': key_name, 'type': 'insert'}
 
-    def visit_update(self, update, **kw):
+    def visit_update(self, update_stmt, **kw):
         """
         Handles UPDATE statements.
         Requires a WHERE clause to identify the entity to update.
         """
-        table = update.table
+        table = update_stmt.table
         kind = table.name
-        parameters = update.parameters[0] # Assumes single parameter set for values to update
+        parameters = update_stmt.parameters[0] # Assumes single parameter set for values to update
 
         # Extract primary key from WHERE clause
         key_name = None
@@ -157,9 +160,9 @@ class DatastoreCompiler(compiler.SQLCompiler):
                 pk_column = col
                 break
 
-        if pk_column and update._where_criteria:
+        if pk_column and update_stmt._where_criteria:
             # Simplified: assuming direct equality filter on PK for update
-            for criterion in update._where_criteria:
+            for criterion in update_stmt._where_criteria:
                 if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
                     if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
                         key_name = criterion.right.value
@@ -173,12 +176,12 @@ class DatastoreCompiler(compiler.SQLCompiler):
 
         return {'kind': kind, 'id': key_name, 'data': data_to_update, 'type': 'update'}
 
-    def visit_delete(self, delete, **kw):
+    def visit_delete(self, delete_stmt, **kw):
         """
         Handles DELETE statements.
         Requires a WHERE clause to identify the entity to delete.
         """
-        table = delete.table
+        table = delete_stmt.table
         kind = table.name
 
         key_name = None
@@ -188,9 +191,9 @@ class DatastoreCompiler(compiler.SQLCompiler):
                 pk_column = col
                 break
 
-        if pk_column and delete._where_criteria:
+        if pk_column and delete_stmt._where_criteria:
             # Simplified: assuming direct equality filter on PK for delete
-            for criterion in delete._where_criteria:
+            for criterion in delete_stmt._where_criteria:
                 if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
                     if hasattr(criterion.left, 'name') and criterion.left.name == pk_column.name:
                         key_name = criterion.right.value
@@ -371,8 +374,8 @@ class CloudDatastoreDialect(default.DefaultDialect):
     # Specifies the compiler and execution context classes to use
     preparer = default.DefaultDialect.preparer
     statement_compiler = DatastoreCompiler
-    type_compiler = DatastoreTypeCompiler
-    execution_context_cls = DatastoreExecutionContext
+    type_compiler_cls = DatastoreTypeCompiler
+    execution_ctx_cls = DatastoreExecutionContext
 
     # Datastore does not have AUTOCOMMIT, explicit transactions are used
     # or mutations are atomic by default.
