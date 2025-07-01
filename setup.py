@@ -25,14 +25,17 @@ from setuptools import setup, find_packages
 v = open(
     os.path.join(os.path.dirname(__file__), "sqlalchemy_datastore", "__init__.py")
 )
-VERSION = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read()).group(1)
+version_match = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read())
+if not version_match:
+    raise RuntimeError("Unable to find version string in __init__.py.")
+VERSION = version_match.group(1)
 v.close()
 
 readme = os.path.join(os.path.dirname(__file__), "README.md")
 
 
 setup(
-    name="sqlalchemy-gcp-datastore",
+    name="python-datastore-sqlalchemy",
     version=VERSION,
     description="GCP datastore for SQLAlchemy",
     long_description=open(readme).read(),
