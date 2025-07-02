@@ -27,52 +27,36 @@ from typing import Optional
 import collections
 
 apilevel = "2.0"
-
-# Threads may share the module and connections, but not cursors.
 threadsafety = 2
-
 paramstyle = "named"
-
 
 # Required exceptions
 class Warning(Exception):
     """Exception raised for important DB-API warnings."""
 
-
 class Error(Exception):
     """Exception representing all non-warning DB-API errors."""
-
 
 class InterfaceError(Error):
     """DB-API error related to the database interface."""
 
-
 class DatabaseError(Error):
     """DB-API error related to the database."""
-
 
 class DataError(DatabaseError):
     """DB-API error due to problems with the processed data."""
 
-
 class OperationalError(DatabaseError):
-    """DB-API error related to the database operation.
-
-    These errors are not necessarily under the control of the programmer.
-    """
-
+    """DB-API error related to the database operation."""
 
 class IntegrityError(DatabaseError):
     """DB-API error when integrity of the database is affected."""
 
-
 class InternalError(DatabaseError):
     """DB-API error when the database encounters an internal error."""
 
-
 class ProgrammingError(DatabaseError):
     """DB-API exception raised for programming errors."""
-
 
 Column = collections.namedtuple(
     "Column",
@@ -87,7 +71,6 @@ Column = collections.namedtuple(
     ],
 )
 
-
 type_map = {
     str: types.String,       
     int: types.NUMERIC,       
@@ -95,8 +78,6 @@ type_map = {
     bool: types.BOOLEAN,     
     bytes: types.BINARY,   
     datetime: types.DATETIME, 
-
-    # Google Cloud Datastore specific types that Python clients return
     datastore.Key: types.String,     
     GeoPoint: types.String, 
     list: types.String,       
@@ -104,40 +85,53 @@ type_map = {
 }
 
 class Cursor:
-
     def __init__(self, connection):
         self.connection = connection
         self._datastore_client = connection._client
-        # Per PEP 249: The attribute is -1 in case no .execute*() has been
-        # performed on the cursor or the rowcount of the last operation
-        # cannot be determined by the interface.
         self.rowcount = -1
-        # Per PEP 249: The arraysize attribute defaults to 1, meaning to fetch
-        # a single row at a time. However, we deviate from that, and set the
-        # default to None, allowing the backend to automatically determine the
-        # most appropriate size.
         self.arraysize = None 
         self._query_data = None
         self._query_rows = None
+        self._result_set = None
         self._closed = False
         self.description = None
-        self._closed = False
 
-    def execute(self, operation: Optional[dict], parameters):
+    def execute(self, operation: Optional[dict], parameters=None):
+        if parameters is None:
+            parameters = {}
+            
         print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
-        rows, schema = self._execute(operation, **parameters)
+        
+        try:
+            result = self._execute(operation, **parameters)
+            
+            if isinstance(result, list):
+                # Case: query operation returns rows list
+                rows = result
+                schema = self._infer_schema_from_rows(rows) if rows else ()
+            elif isinstance(result, dict):
+                # Case: insert/update/delete operations return dict with status/id
+                rows = [result]
+                schema = self._create_schema_from_dict(result)
+            else:
+                # Fallback case
+                rows = []
+                schema = ()
 
-        self.rowcount = len(rows) if rows else 0
-        if self.rowcount != 0:
+            self.rowcount = len(rows) if rows else 0
             self._set_description(schema)
             self._query_rows = rows
-            self._query_data = iter(rows)  # Convert rows to an iterator for fetch operations
+            self._result_set = iter(rows)  # Set _result_set for fetch operations
+            
+        except Exception as e:
+            self.rowcount = -1
+            self._query_rows = []
+            self._result_set = iter([])
+            self.description = None
+            raise OperationalError(f"Execution failed: {str(e)}", {}, None)
 
     def _execute(self, operation, **kw):
-        """
-        This method is called when the compiler returns the compiled SQL.
-        In our case, the compiler returns a dict representing the Datastore operation.
-        """
+        """Execute the Datastore operation."""
         op_type = operation["type"]
         kind = operation["kind"]
 
@@ -161,12 +155,14 @@ class Cursor:
 
             results = []
             for entity in datastore_query.fetch(limit=limit, offset=offset):
-                # Convert Datastore Entity to a dictionary for SQLAlchemy result rows
                 row_data = dict(entity)
-                # Include the entity's ID (key.id_or_name)
                 row_data["id"] = entity.key.id_or_name
                 results.append(row_data)
-            return results
+            
+            # Create schema from results
+            schema = self._infer_schema_from_rows(results) if results else ()
+            return results, schema
+
         elif op_type == "lookup":
             # Direct lookup by ID
             key_id = operation["id"]
@@ -175,18 +171,9 @@ class Cursor:
             if entity:
                 row_data = dict(entity)
                 row_data["id"] = entity.key.id_or_name
-                return [row_data], (
-                    Column(
-                        name=field_name,
-                        type_code= type_map.get(type(field_value), types.String),
-                        display_size=None,
-                        internal_size=None,
-                        precision=None,
-                        scale=None,
-                        null_ok=True,
-                    ) for field_name, field_value in row_data.items()
-                )
+                return [row_data]
             return []
+
         elif op_type == "insert":
             entity = datastore.Entity(
                 self._datastore_client.key(kind, operation["key_name"])
@@ -195,8 +182,8 @@ class Cursor:
             )
             entity.update(operation["data"])
             self._datastore_client.put(entity)
-            # Return the key of the inserted entity, especially if ID was auto-generated
             return {"id": entity.key.id_or_name}
+
         elif op_type == "update":
             key = self._datastore_client.key(kind, operation["id"])
             entity = self._datastore_client.get(key)
@@ -205,43 +192,79 @@ class Cursor:
                 self._datastore_client.put(entity)
                 return {"id": entity.key.id_or_name}
             raise OperationalError("Entity not found for update.", {}, None)
+
         elif op_type == "delete":
             key = self._datastore_client.key(kind, operation["id"])
             self._datastore_client.delete(key)
             return {"id": operation["id"]}
+
         elif op_type == "drop_kind":
-            # Warning: This is a highly destructive operation!
-            # It will delete ALL entities of the specified kind.
-            # In a real app, you'd likely have stricter controls or confirmation.
             query = self._datastore_client.query(kind=kind)
             keys_to_delete = [entity.key for entity in query.fetch()]
             if keys_to_delete:
                 self._datastore_client.delete_multi(keys_to_delete)
             return {"status": f"Deleted all entities of kind: {kind}"}
-        elif op_type == "create_kind":
-            # Datastore is schemaless, so 'create_table' is a no-op for actual schema.
-            # It mainly confirms the 'kind' name can be used.
-            return {"status": f"Kind {kind} acknowledged. No schema created."}
-        else:
-            raise OperationalError(
-                f"Unsupported Datastore operation: {op_type}", {}, None
-            )
 
-    def _set_description(self, schema: tuple[Column, ...] = ()):
-        """
-        Set the cursor description based on the schema.
-        This is used to provide metadata about the result set.
-        """
+        elif op_type == "create_kind":
+            return {"status": f"Kind {kind} acknowledged. No schema created."}
+
+        else:
+            raise OperationalError(f"Unsupported Datastore operation: {op_type}", {}, None)
+
+    def _infer_schema_from_rows(self, rows):
+        """Infer schema from the first row of data"""
+        if not rows or not isinstance(rows[0], dict):
+            return ()
+        
+        first_row = rows[0]
+        schema = []
+        for field_name, field_value in first_row.items():
+            schema.append(
+                Column(
+                    name=field_name,
+                    type_code=type_map.get(type(field_value), types.String),
+                    display_size=None,
+                    internal_size=None,
+                    precision=None,
+                    scale=None,
+                    null_ok=True,
+                )
+            )
+        return tuple(schema)
+
+    def _create_schema_from_dict(self, result_dict):
+        """Create schema from a result dictionary (for insert/update/delete operations)"""
+        schema = []
+        for field_name, field_value in result_dict.items():
+            schema.append(
+                Column(
+                    name=field_name,
+                    type_code=type_map.get(type(field_value), types.String),
+                    display_size=None,
+                    internal_size=None,
+                    precision=None,
+                    scale=None,
+                    null_ok=True,
+                )
+            )
+        return tuple(schema)
+
+    def _set_description(self, schema: tuple = ()):
+        """Set the cursor description based on the schema."""
         self.description = schema
 
     def fetchall(self):
         if self._closed:
             raise Error("Cursor is closed.")
+        if self._result_set is None:
+            return []
         return list(self._result_set)
 
     def fetchone(self):
         if self._closed:
             raise Error("Cursor is closed.")
+        if self._result_set is None:
+            return None
         try:
             return next(self._result_set)
         except StopIteration:
@@ -253,9 +276,7 @@ class Cursor:
         self._result_set = iter([])
         print("Cursor is closed.")
 
-
 class Connection:
-
     def __init__(self, client=None):
         self._client = client
         self._transaction = None
@@ -271,7 +292,6 @@ class Connection:
 
     def rollback(self):
         pass
-
 
 def connect(client=None):
     return Connection(client)
