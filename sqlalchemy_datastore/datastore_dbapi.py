@@ -78,10 +78,11 @@ type_map = {
     bool: types.BOOLEAN,     
     bytes: types.BINARY,   
     datetime: types.DATETIME, 
-    datastore.Key: types.String,     
-    GeoPoint: types.String, 
-    list: types.String,       
-    dict: types.String,      
+    datastore.Key: types.JSON,     
+    GeoPoint: types.JSON, 
+    list: types.JSON,       
+    dict: types.JSON,      
+    None.__class__: types.String
 }
 
 class Cursor:
@@ -103,16 +104,16 @@ class Cursor:
         print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
         
         try:
-            result = self._execute(operation, **parameters)
+            rows = self._execute(operation, **parameters)
             
-            if isinstance(result, list):
+            if isinstance(rows, list):
                 # Case: query operation returns rows list
-                rows = result
+                rows = rows
                 schema = self._infer_schema_from_rows(rows) if rows else ()
-            elif isinstance(result, dict):
+            elif isinstance(rows, dict):
                 # Case: insert/update/delete operations return dict with status/id
-                rows = [result]
-                schema = self._create_schema_from_dict(result)
+                rows = [rows]
+                schema = self._create_schema_from_dict(rows)
             else:
                 # Fallback case
                 rows = []
@@ -222,7 +223,7 @@ class Cursor:
             schema.append(
                 Column(
                     name=field_name,
-                    type_code=type_map.get(type(field_value), types.String),
+                    type_code=type_map.get(type(field_value), types.String)(),
                     display_size=None,
                     internal_size=None,
                     precision=None,
@@ -239,7 +240,7 @@ class Cursor:
             schema.append(
                 Column(
                     name=field_name,
-                    type_code=type_map.get(type(field_value), types.String),
+                    type_code=type_map.get(type(field_value), types.String)(),
                     display_size=None,
                     internal_size=None,
                     precision=None,

@@ -47,6 +47,15 @@ class DatastoreCompiler(compiler.SQLCompiler):
     def __init__(self, dialect, statement, *args, **kwargs):
         super().__init__(dialect, statement, *args, **kwargs)
 
+        if hasattr(statement, "_compile_state_factory"):
+            self.compile_state = statement._compile_state_factory(
+                dialect, statement, None
+            )
+            self.compiled.compile_state = self.compile_state
+        else:
+            self.compile_state = None
+
+
     def visit_select(self, select_stmt, asfrom=False, **kw):
         """
         Handles SELECT statements.
