@@ -45,7 +45,7 @@ class DatastoreCompiler(compiler.SQLCompiler):
     Translates SQLAlchemy expressions into Datastore queries/operations.
     """
     def __init__(self, dialect, statement, *args, **kwargs):
-        super(DatastoreCompiler, self).__init__(dialect, statement, *args, **kwargs)
+        super().__init__(dialect, statement, *args, **kwargs)
 
     def visit_select(self, select_stmt, asfrom=False, **kw):
         """
