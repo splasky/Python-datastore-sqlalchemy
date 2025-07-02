@@ -21,11 +21,21 @@ conn = engine.connect()
 # """))
 
 # Insert data (using parameterized query to prevent SQL injection)
+conn.execute(text("INSERT INTO users (name, age) VALUES ('Bob', 25)"))
 conn.execute(
     text("INSERT INTO users (name, age) VALUES (:name, :age)"),
     {"name": "Alice", "age": 30}
 )
-conn.execute(text("INSERT INTO users (name, age) VALUES ('Bob', 25)"))
+
+from sqlalchemy_datastore import CloudDatastoreDialect
+stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
+compiled = stmt.compile(dialect=CloudDatastoreDialect())
+print(str(compiled))
+with engine.connect() as conn:
+    conn.execute(
+        stmt,
+        {"name": "Alice", "age": 30}
+    )
 
 # Commit the transaction
 conn.commit()
