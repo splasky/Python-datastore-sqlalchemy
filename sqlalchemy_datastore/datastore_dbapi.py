@@ -30,33 +30,43 @@ apilevel = "2.0"
 threadsafety = 2
 paramstyle = "named"
 
+
 # Required exceptions
 class Warning(Exception):
     """Exception raised for important DB-API warnings."""
 
+
 class Error(Exception):
     """Exception representing all non-warning DB-API errors."""
+
 
 class InterfaceError(Error):
     """DB-API error related to the database interface."""
 
+
 class DatabaseError(Error):
     """DB-API error related to the database."""
+
 
 class DataError(DatabaseError):
     """DB-API error due to problems with the processed data."""
 
+
 class OperationalError(DatabaseError):
     """DB-API error related to the database operation."""
+
 
 class IntegrityError(DatabaseError):
     """DB-API error when integrity of the database is affected."""
 
+
 class InternalError(DatabaseError):
     """DB-API error when the database encounters an internal error."""
 
+
 class ProgrammingError(DatabaseError):
     """DB-API exception raised for programming errors."""
+
 
 Column = collections.namedtuple(
     "Column",
@@ -72,62 +82,69 @@ Column = collections.namedtuple(
 )
 
 type_map = {
-    str: types.String,       
-    int: types.NUMERIC,       
-    float: types.DOUBLE,    
-    bool: types.BOOLEAN,     
-    bytes: types.BINARY,   
-    datetime: types.DATETIME, 
-    datastore.Key: types.JSON,     
-    GeoPoint: types.JSON, 
-    list: types.JSON,       
-    dict: types.JSON,      
-    None.__class__: types.String
+    str: types.String,
+    int: types.NUMERIC,
+    float: types.DOUBLE,
+    bool: types.BOOLEAN,
+    bytes: types.BINARY,
+    datetime: types.DATETIME,
+    datastore.Key: types.JSON,
+    GeoPoint: types.JSON,
+    list: types.JSON,
+    dict: types.JSON,
+    None.__class__: types.String,
 }
+
 
 class Cursor:
     def __init__(self, connection):
         self.connection = connection
         self._datastore_client = connection._client
         self.rowcount = -1
-        self.arraysize = None 
+        self.arraysize = None
         self._query_data = None
         self._query_rows = None
-        self._result_set = None
         self._closed = False
         self.description = None
 
     def execute(self, operation: Optional[dict], parameters=None):
+        """Execute a Datastore operation."""
+        if self._closed:
+            raise Error("Cursor is closed.")
+
+    def execute_orm(self, operation: Optional[dict], parameters=None):
         if parameters is None:
             parameters = {}
-            
+
         print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
-        
+
         try:
-            rows = self._execute(operation, **parameters)
-            
-            if isinstance(rows, list):
-                # Case: query operation returns rows list
-                rows = rows
+            result = self._execute(operation, **parameters)
+
+            if isinstance(result, tuple) and len(result) == 2:
+                # Case: query operation returns (rows, schema)
+                rows, schema = result
+            elif isinstance(result, list):
+                # Fallback: treat as rows
+                rows = result
                 schema = self._infer_schema_from_rows(rows) if rows else ()
-            elif isinstance(rows, dict):
+            elif isinstance(result, dict):
                 # Case: insert/update/delete operations return dict with status/id
-                rows = [rows]
-                schema = self._create_schema_from_dict(rows)
+                rows = [result]
+                schema = self._create_schema_from_dict(result)
             else:
-                # Fallback case
                 rows = []
                 schema = ()
 
             self.rowcount = len(rows) if rows else 0
             self._set_description(schema)
-            self._query_rows = rows
-            self._result_set = iter(rows)  # Set _result_set for fetch operations
-            
+            self._query_results = rows
+            self._query_rows = iter(self._query_results)
+
         except Exception as e:
             self.rowcount = -1
-            self._query_rows = []
-            self._result_set = iter([])
+            self._query_results = []
+            self._query_rows = iter(self._query_results)
             self.description = None
             raise OperationalError(f"Execution failed: {str(e)}", {}, None)
 
@@ -159,7 +176,7 @@ class Cursor:
                 row_data = dict(entity)
                 row_data["id"] = entity.key.id_or_name
                 results.append(row_data)
-            
+
             # Create schema from results
             schema = self._infer_schema_from_rows(results) if results else ()
             return results, schema
@@ -210,13 +227,15 @@ class Cursor:
             return {"status": f"Kind {kind} acknowledged. No schema created."}
 
         else:
-            raise OperationalError(f"Unsupported Datastore operation: {op_type}", {}, None)
+            raise OperationalError(
+                f"Unsupported Datastore operation: {op_type}", {}, None
+            )
 
     def _infer_schema_from_rows(self, rows):
         """Infer schema from the first row of data"""
         if not rows or not isinstance(rows[0], dict):
             return ()
-        
+
         first_row = rows[0]
         schema = []
         for field_name, field_value in first_row.items():
@@ -257,25 +276,21 @@ class Cursor:
     def fetchall(self):
         if self._closed:
             raise Error("Cursor is closed.")
-        if self._result_set is None:
-            return []
-        return list(self._result_set)
+        return list(self._query_rows)
 
     def fetchone(self):
         if self._closed:
             raise Error("Cursor is closed.")
-        if self._result_set is None:
-            return None
         try:
-            return next(self._result_set)
+            return next(self._query_rows)
         except StopIteration:
             return None
 
     def close(self):
         self._closed = True
         self.connection = None
-        self._result_set = iter([])
         print("Cursor is closed.")
+
 
 class Connection:
     def __init__(self, client=None):
@@ -293,6 +308,7 @@ class Connection:
 
     def rollback(self):
         pass
+
 
 def connect(client=None):
     return Connection(client)
