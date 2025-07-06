@@ -527,7 +527,6 @@ class CloudDatastoreDialect(default.DefaultDialect):
         cursor._query_data = None
         cursor._query_rows = None
         cursor.rowcount = -1
-        # cursor.rowcount = cursor._rowcount
         cursor.description = None
         cursor._last_executed = statement
         cursor._parameters = parameters or {}
