@@ -1,8 +1,0 @@
-javac -cp "java-gql/lib/*" -d out GqlExample.java
-jar cfe ../gql-query.jar GqlExample *.class
-
-java -cp "out:java-gql/lib/*" GqlExample test-api-2 test_credentials.json "SELECT * FROM APIKey"
-java -cp "gql-query.jar:java-gql/lib/*" GqlExample test-api-2 test_credentials.json "SELECT * FROM APIKey"
-mvn package
-java -jar --add-opens=java.base/java.nio=ALL-UNNAMED target/gql-query.jar test-api-2 ./credentials.json "SELECT * FROM APIKey"
-java -jar --add-opens=java.base/java.nio=ALL-UNNAMED target/datastore-arrow-exporter-1.0.0.jar test-api-2 ./credentials.json "SELECT * FROM APIKey"
