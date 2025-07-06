@@ -9,7 +9,8 @@ SQLAlchemy
 from sqlalchemy import *
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import *
-engine = create_engine('datastore://project', credentials='path/to/credentials.json')
-table = Table('dataset.table', MetaData(bind=engine), autoload=True)
-print(select([func.count('*')], from_obj=table().scalar()))
+engine = create_engine('datastore://test-api-1', credentials='path/to/credentials.json')
+conn = engine.connect()
+result = conn.execute("SELECT * from test_table)
+print(result.fetchall())
 ```
