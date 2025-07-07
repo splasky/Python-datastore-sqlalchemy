@@ -471,46 +471,36 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def do_execute(self, cursor, statement, parameters, context=None):
         """Execute a statement."""
         # cursor.execute(statement, parameters)
-        self._execute(cursor, statement, parameters)
+        self.gql_query(cursor, statement, parameters)
 
-    def _execute(self, cursor, statement, parameters=None, **kwargs):
+    def gql_query(self, cursor, statement, parameters=None, **kwargs):
         """Only execute raw SQL statements."""
         from google.oauth2 import service_account
         from google.auth.transport.requests import AuthorizedSession
 
-        # 建立憑證物件，並指定 scopes
+        # Request service credentials 
         credentials = service_account.Credentials.from_service_account_file(
             self.credentials_path, scopes=["https://www.googleapis.com/auth/datastore"]
         )
 
-        # 用憑證建立授權的 session
+        # Create authorize session
         authed_session = AuthorizedSession(credentials)
 
-        # 取得專案 ID (從憑證裡讀)
+        # Fetch project ID from credentials
         project_id = credentials.project_id
 
-        # REST API URL
+        # Query url
         url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
 
-        # GQL 查詢字串與參數
+        # GQL payload
         body = {
-            "query": {
-                "kind": [{"name": "APIKey"}],
-                "filter": {
-                    "propertyFilter": {
-                        "property": {"name": "__key__"},
-                        "op": "EQUAL",
-                        "value": {
-                            "keyValue": {
-                                "path": [{"kind": "APIKey", "id": "4857456767270912"}]
-                            }
-                        },
-                    }
-                },
+            "gqlQuery": {
+                "queryString": statement,
+                "allowLiterals": False,
             }
         }
 
-        # 用授權 session 發 POST 請求（會自動帶 token）
+        # Send GQL request
         response = authed_session.post(url, json=body)
 
         if response.status_code == 200:
