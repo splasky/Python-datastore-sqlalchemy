@@ -130,7 +130,7 @@ result = conn.execute(
 )
 print(result)
 
-from sqlalchemy_datastore import CloudDatastoreDialect
+from src import CloudDatastoreDialect
 stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
 compiled = stmt.compile(dialect=CloudDatastoreDialect())
 print(str(compiled))
