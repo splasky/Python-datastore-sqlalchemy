@@ -37,12 +37,12 @@ readme = os.path.join(os.path.dirname(__file__), "README.md")
 setup(
     name="python-datastore-sqlalchemy",
     version=VERSION,
-    description="GCP datastore for SQLAlchemy",
+    description="SQLAlchemy dialect for google cloud datastore",
     long_description=open(readme).read(),
     long_description_content_type="text/x-rst",
     url="https://github.com/splasky/python-datastore-sqlalchemy",
     author="HY Chang(splasky)",
-    author_email="gh00653@duck.com",
+    author_email="hychang.1997.tw@gmail.com",
     license="MIT",
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
@@ -64,9 +64,6 @@ setup(
     include_package_data=True,
     install_requires=["SQLAlchemy>=2.0.0",],
     zip_safe=False,
-    package_data={
-        "sqlalchemy_datastore": ["*.jar"],
-    },
     entry_points={
         "sqlalchemy.dialects": ["datastore = sqlalchemy_datastore:CloudDatastoreDialect"]
     },
