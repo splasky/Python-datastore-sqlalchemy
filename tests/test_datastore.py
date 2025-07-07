@@ -27,18 +27,6 @@ Base = declarative_base()
 engine = create_engine('datastore://test-api-2', echo=True)
 conn = engine.connect()
 
-# no cursor in datastore
-# cursor = conn.cursor()
-
-# Datastore has no create table command 
-# conn.execute(text("""
-#     CREATE TABLE users (
-#         id INTEGER PRIMARY KEY AUTOINCREMENT,
-#         name TEXT,
-#         age INTEGER
-#     )
-# """))
-
 # Query the database
 # GQL reference can be found at https://cloud.google.com/datastore/docs/gql_reference
 result = conn.execute(text("SELECT * FROM users"))
