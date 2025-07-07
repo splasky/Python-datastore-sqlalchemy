@@ -18,13 +18,61 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import declarative_base
 import os
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
 
-Base = declarative_base()
-engine = create_engine('datastore://test-api-2', echo=True)
+# Create test dataset
+from google.cloud import datastore
+client = datastore.Client(project="python-datastore-sqlalchemy")
+
+# user1 Alice
+user1 = datastore.Entity(client.key('users'))
+user1["name"] = "Alice"
+user1["age"] = 15
+user1["city"] = "Taipei"
+
+# user2 Bob
+user2 = datastore.Entity(client.key('users'))
+user2["name"] = "Bob"
+user2["age"] = 25 
+user2["city"] = "Taichung"
+
+# user3 Carol
+user3 = datastore.Entity(client.key('users'))
+user3["name"] = "Carol"
+user3["age"] = 30
+user3["city"] = "Tainan"
+
+batch = client.batch()
+batch.begin()
+batch.put(user1)
+batch.put(user2)
+batch.put(user3)
+batch.commit()
+
+# task1 for Alice
+task1 = datastore.Entity(client.key('tasks'))
+task1["task"] = "Crafting Sea Urchins in Atelier"
+task1["content"] = {"title": ""} 
+task1["is_done"] = False
+task1["tag"] = "house"
+
+# task2 for Bob
+task2 = datastore.Entity(client.key('tasks'))
+task2["task"] = "Crafting Sea Urchins in Atelier"
+task2["content"] = 15
+task2["is_done"] = False
+task2["tag"] = "Wild"
+
+# task3 for Carol
+task3 = datastore.Entity(client.key('tasks'))
+task3["task"] = ""
+task3["content"] = 15
+task3["is_done"] = False
+task3["tag"] = "house"
+
+engine = create_engine('datastore://python-datastore-sqlalchemy', echo=True)
 conn = engine.connect()
 
 # Query the database
