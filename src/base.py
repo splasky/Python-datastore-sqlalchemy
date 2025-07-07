@@ -18,7 +18,6 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
 from datetime import datetime
-from sqlalchemy.dialects import registry
 from sqlalchemy import Engine
 
 from . import _types
@@ -26,8 +25,6 @@ from . import datastore_dbapi
 from ._helpers import create_datastore_client
 from ._types import _get_sqla_column_type
 from .parse_url import parse_url
-
-registry.register("my_custom_dialect", "my_custom_dialect", "dialect")
 
 from sqlalchemy.engine import default
 from sqlalchemy import exc

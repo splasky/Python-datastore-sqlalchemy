@@ -17,8 +17,12 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import pytest
-from sqlalchemy import create_engine
 import os
+
+from sqlalchemy.dialects import registry
+from sqlalchemy import create_engine
+
+registry.register("datastore", "sqlalchemy_datastore", "DatastoreDialect")
 
 # Fixture example (add this to your conftest.py)
 @pytest.fixture
@@ -28,3 +32,4 @@ def conn():
     engine = create_engine('datastore://python-datastore-sqlalchemy', echo=True)
     conn = engine.connect()
     return conn
+
