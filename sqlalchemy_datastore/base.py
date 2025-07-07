@@ -21,6 +21,7 @@ from datetime import datetime
 from sqlalchemy.dialects import registry
 from sqlalchemy import Engine
 
+from . import _types
 from . import datastore_dbapi
 from ._helpers import create_datastore_client
 from ._types import _get_sqla_column_type
@@ -29,12 +30,8 @@ from .parse_url import parse_url
 registry.register("my_custom_dialect", "my_custom_dialect", "dialect")
 
 from sqlalchemy.engine import default
-from sqlalchemy import exc, types as sqltypes
+from sqlalchemy import exc
 from sqlalchemy.sql import compiler
-
-# Import Google Cloud Datastore client library
-from google.cloud import datastore
-
 
 # Define constants for the dialect
 class DatastoreCompiler(compiler.SQLCompiler):
@@ -46,12 +43,12 @@ class DatastoreCompiler(compiler.SQLCompiler):
     def __init__(self, dialect, statement, *args, **kwargs):
         super().__init__(dialect, statement, *args, **kwargs)
 
-        # if hasattr(statement, "_compile_state_factory"):
-        #     compiler = dialect.statement_compiler(dialect, statement)
-        #     self.compile_state = statement._compile_state_factory(statement, compiler)
-        #     self.compiled.compile_state = self.compile_state
-        # else:
-        self.compile_state = None
+        if hasattr(statement, "_compile_state_factory"):
+            compiler = dialect.statement_compiler(dialect, statement)
+            self.compile_state = statement._compile_state_factory(statement, compiler)
+            self.compiled.compile_state = self.compile_state
+        else:
+            self.compile_state = None
 
     def visit_select(self, select_stmt, asfrom=False, **kw):
         """
@@ -546,54 +543,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
                 False  # For SELECT, cursor should remain open to fetch rows
             )
 
-            rows = []
-            fields = {}
-
-            for entity in data:
-                row = []
-                properties = entity.get("entity", {}).get("properties", {})
-                key = entity.get("entity", {}).get("key", {})
-                row.append(key.get("path", []))
-                fields["key"] = ("key", None, None, None, None, None, None)
-                for prop_k, prop_value in properties.items():
-                    value_type = next(iter(prop_value), None)
-                    if value_type == "arrayValue":
-                        prop_value = prop_value["arrayValue"]["values"]
-                    elif value_type == "nullValue":
-                        prop_value = None
-                    elif value_type == "booleanValue":
-                        prop_value = bool(prop_value["booleanValue"])
-                    elif value_type == "integerValue":
-                        prop_value = int(prop_value["integerValue"])
-                    elif value_type == "doubleValue":
-                        prop_value = float(prop_value["doubleValue"])
-                    elif value_type == "stringValue":
-                        prop_value = prop_value["stringValue"]
-                    elif value_type == "timestampValue":
-                        prop_value = datetime.fromisoformat(
-                            prop_value["timestampValue"]
-                        )
-                    elif value_type == "blobValue":
-                        prop_value = bytes(prop_value["blobValue"])
-                    elif value_type == "geoPointValue":
-                        # FIXME: not implemented
-                        prop_value = prop_value["geoPointValue"]
-                        raise NotImplementedError(
-                            "geoPointValue is not implemented yet"
-                        )
-                    elif value_type == "keyValue":
-                        # FIXME: not implemented
-                        prop_value = prop_value["keyValue"]["path"]
-                        raise NotImplementedError("keyValue is not implemented yet")
-                    elif value_type == "entityValue":
-                        # FIXME: not implemented
-                        prop_value = prop_value["entityValue"]["properties"]
-                        raise NotImplementedError("entityValue is not implemented yet")
-                    row.append(prop_value)
-                    # FIXME: It's better to provide proper type information if possible
-                    fields[prop_k] = (prop_k, None, None, None, None, None, None)
-                rows.append(tuple(row))
-
+            rows, fields = ParseEntity.parse(data)
             fields = list(fields.values())
             cursor._query_data = iter(rows)
             cursor._query_rows = iter(rows)
@@ -605,3 +555,76 @@ class CloudDatastoreDialect(default.DefaultDialect):
             affected_count = len(data) if isinstance(data, list) else 0
             cursor.rowcount = affected_count
             cursor._closed = True
+
+class ParseEntity:
+
+    @classmethod
+    def parse(cls, data: dict):
+        """
+        Parse the datastore entity
+
+        dict is a json base entity
+        """
+        rows = []
+        fields = {}
+        for entity in data:
+            row = []
+            properties = entity.get("entity", {}).get("properties", {})
+            key = entity.get("entity", {}).get("key", {})
+            row.append(key.get("path", []))
+            fields["key"] = ("key", None, None, None, None, None, None)
+            for prop_k, prop_v in properties.items():
+                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v) 
+                row.append(prop_value)
+                fields[prop_k] = (prop_k, prop_type, None, None, None, None, None)
+            rows.append(tuple(row))
+        return rows, fields
+    
+    @classmethod
+    def parse_properties(cls, prop_k: str, prop_v: dict):
+        value_type = next(iter(prop_v), None)
+        prop_type = None 
+
+        if value_type == "nullValue":
+            prop_value = None
+            prop_type = _types.NONE_TYPES
+        elif value_type == "booleanValue":
+            prop_value = bool(prop_v["booleanValue"])
+            prop_type = _types.BOOL
+        elif value_type == "integerValue":
+            prop_value = int(prop_v["integerValue"])
+            prop_type = _types.INTEGER
+        elif value_type == "doubleValue":
+            prop_value = float(prop_v["doubleValue"])
+            prop_type = _types.FLOAT64
+        elif value_type == "stringValue":
+            prop_value = prop_v["stringValue"]
+            prop_type = _types.STRING
+        elif value_type == "timestampValue":
+            prop_value = datetime.fromisoformat(
+                prop_v["timestampValue"]
+            )
+            prop_type = _types.TIMESTAMP
+        elif value_type == "blobValue":
+            prop_value = bytes(prop_v["blobValue"])
+            prop_type = _types.BYTES
+        elif value_type == "geoPointValue":
+            prop_value = prop_v["geoPointValue"]
+            prop_type = _types.GEOPOINT
+        elif value_type == "keyValue":
+            prop_value = prop_v["keyValue"]["path"]
+            prop_type = _types.KEY_TYPE
+        elif value_type == "arrayValue":
+            prop_value = []
+            for entity in prop_v["arrayValue"]["values"]:
+                e_v, _ = ParseEntity.parse_properties(prop_k, entity)
+                prop_value.append(e_v)
+            prop_type = _types.ARRAY
+        elif value_type == "dictValue":
+            prop_value = prop_v["dictValue"]
+            prop_type = _types.STRUCT_FIELD_TYPES
+        elif value_type == "entityValue":
+            # FIXME: not implemented
+            prop_value = prop_v["entityValue"]["properties"]
+            raise NotImplementedError("entityValue is not implemented yet")
+        return prop_value, prop_type

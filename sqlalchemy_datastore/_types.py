@@ -21,7 +21,6 @@ import sqlalchemy.types
 import sqlalchemy.util
 
 from google.cloud.bigquery.schema import SchemaField
-from google.cloud.datastore.helpers import GeoPoint
 
 _type_map = {
     "ARRAY": sqlalchemy.types.ARRAY,
@@ -36,11 +35,14 @@ _type_map = {
     "INT64": sqlalchemy.types.Integer,
     "INTEGER": sqlalchemy.types.Integer,
     "NUMERIC": sqlalchemy.types.Numeric,
-    "RECORD": {},
+    "RECORD": sqlalchemy.types.JSON,
     "STRING": sqlalchemy.types.String,
-    "STRUCT": {},
+    "STRUCT": sqlalchemy.types.JSON,
     "TIMESTAMP": sqlalchemy.types.TIMESTAMP,
     "TIME": sqlalchemy.types.TIME,
+    "GEOGRAPHY": sqlalchemy.types.ARRAY,
+    "NONE": sqlalchemy.types.NullType,
+    "KEY": sqlalchemy.types.JSON
 }
 
 # By convention, dialect-provided types are spelled with all upper case.
@@ -60,13 +62,11 @@ RECORD = _type_map["RECORD"]
 STRING = _type_map["STRING"]
 TIMESTAMP = _type_map["TIMESTAMP"]
 TIME = _type_map["TIME"]
-
-try:
-    _type_map["GEOGRAPHY"] = GeoPoint
-except NameError:  # pragma: NO COVER
-    pass
-
-STRUCT_FIELD_TYPES = "RECORD", "STRUCT"
+GEOPOINT = _type_map["GEOGRAPHY"]
+STRUCT_FIELD_TYPES = _type_map["STRUCT"] 
+RECORD_FIELD_TYPES = _type_map["RECORD"] 
+NONE_TYPES = _type_map["NONE"]
+KEY_TYPE = _type_map["KEY"]
 
 
 def _get_transitive_schema_fields(fields):
