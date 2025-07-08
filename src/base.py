@@ -496,7 +496,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         body = {
             "gqlQuery": {
                 "queryString": statement,
-                "allowLiterals": False,
+                "allowLiterals": True, # FIXME: This may cacuse sql injection
             }
         }
 
