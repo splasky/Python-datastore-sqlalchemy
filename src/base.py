@@ -508,6 +508,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
             print(data)
         else:
             print("Error:", response.status_code, response.text)
+            raise datastore_dbapi.OperationalError("Failed to execute statement:{statement}")
 
         cursor._query_data = None
         cursor._query_rows = None
