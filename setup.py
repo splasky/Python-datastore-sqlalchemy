@@ -23,7 +23,7 @@ import re
 from setuptools import setup, find_packages
 
 v = open(
-    os.path.join(os.path.dirname(__file__), "sqlalchemy_datastore", "__init__.py")
+    os.path.join(os.path.dirname(__file__), "src", "__init__.py")
 )
 version_match = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read())
 if not version_match:
