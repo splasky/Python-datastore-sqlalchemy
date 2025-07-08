@@ -93,15 +93,15 @@ class TestGQLWhereConditions:
     
     def test_where_equals(self, conn):
         """Test WHERE property = value"""
-        result = conn.execute(text("SELECT * FROM users WHERE name = 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE name = 'Elmerulia Frixell'"))
         data = result.all()
-        assert len(data) == 1, "Expected 1 row where name equals 'Alice'"
+        assert len(data) == 1, "Expected 1 row where name equals 'Elmerulia Frixell'"
     
     def test_where_not_equals(self, conn):
         """Test WHERE property != value"""
-        result = conn.execute(text("SELECT * FROM users WHERE name != 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE name != 'Elmerulia Frixell'"))
         data = result.all()
-        assert len(data) == 2, "Expected 2 rows where name not equals 'Alice'"
+        assert len(data) == 2, "Expected 2 rows where name not equals 'Elmerulia Frixell'"
     
     def test_where_greater_than(self, conn):
         """Test WHERE property > value"""
@@ -135,15 +135,15 @@ class TestGQLWhereConditions:
     
     def test_where_in_list(self, conn):
         """Test WHERE property IN (value1, value2, ...)"""
-        result = conn.execute(text("SELECT * FROM users WHERE name IN ('Alice', 'Bob')"))
+        result = conn.execute(text("SELECT * FROM users WHERE name IN ('Elmerulia Frixell', 'Virginia Robertson')"))
         data = result.all()
-        assert len(data) == 2, "Expected 2 rows where name in ('Alice', 'Bob')"
+        assert len(data) == 2, "Expected 2 rows where name in ('Elmerulia Frixell', 'Virginia Robertson')"
     
     def test_where_not_in_list(self, conn):
         """Test WHERE property NOT IN (value1, value2, ...)"""
-        result = conn.execute(text("SELECT * FROM users WHERE name NOT IN ('Alice')"))
+        result = conn.execute(text("SELECT * FROM users WHERE name NOT IN ('Elmerulia Frixell')"))
         data = result.all()
-        assert len(data) == 2, "Expected 2 rows where name not in ('Alice')"
+        assert len(data) == 2, "Expected 2 rows where name not in ('Elmerulia Frixell')"
     
     def test_where_contains(self, conn):
         """Test WHERE property CONTAINS value"""
@@ -169,25 +169,25 @@ class TestGQLCompoundConditions:
     
     def test_where_and_condition(self, conn):
         """Test WHERE condition1 AND condition2"""
-        result = conn.execute(text("SELECT * FROM users WHERE age > 20 AND name = 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE age > 20 AND name = 'Elmerulia Frixell'"))
         data = result.all()
         assert len(data) == 1, "Expected 1 row matching both conditions"
     
     def test_where_or_condition(self, conn):
         """Test WHERE condition1 OR condition2"""
-        result = conn.execute(text("SELECT * FROM users WHERE age < 25 OR name = 'Carol'"))
+        result = conn.execute(text("SELECT * FROM users WHERE age < 25 OR name = 'Travis 'Ghost' Hayes'"))
         data = result.all()
         assert len(data) == 2, "Expected 2 rows matching either condition"
     
     def test_where_parenthesized_conditions(self, conn):
         """Test WHERE (condition1 AND condition2) OR condition3"""
-        result = conn.execute(text("SELECT * FROM users WHERE (age > 30 AND name = 'Alice') OR name = 'Bob'"))
+        result = conn.execute(text("SELECT * FROM users WHERE (age > 30 AND name = 'Elmerulia Frixell') OR name = 'Virginia Robertson'"))
         data = result.all()
         assert len(data) == 2, "Expected 2 rows matching complex condition"
     
     def test_where_complex_compound(self, conn):
         """Test complex compound conditions"""
-        result = conn.execute(text("SELECT * FROM users WHERE (age >= 30 OR name = 'Bob') AND name != 'David'"))
+        result = conn.execute(text("SELECT * FROM users WHERE (age >= 30 OR name = 'Virginia Robertson') AND name != 'David'"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows matching complex compound condition"
 
@@ -259,25 +259,25 @@ class TestGQLSyntheticLiterals:
     
     def test_key_literal_simple(self, conn):
         """Test KEY(kind, id)"""
-        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY('users', 'alice_id')"))
+        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY('users', 'Elmerulia Frixell_id')"))
         data = result.all()
         assert len(data) >= 0, "Expected rows matching KEY literal"
     
     def test_key_literal_with_project(self, conn):
         """Test KEY with PROJECT"""
-        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(PROJECT('my-project'), 'users', 'alice_id')"))
+        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(PROJECT('my-project'), 'users', 'Elmerulia Frixell_id')"))
         data = result.all()
         assert len(data) >= 0, "Expected rows matching KEY with PROJECT"
     
     def test_key_literal_with_namespace(self, conn):
         """Test KEY with NAMESPACE"""
-        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(NAMESPACE('my-namespace'), 'users', 'alice_id')"))
+        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(NAMESPACE('my-namespace'), 'users', 'Elmerulia Frixell_id')"))
         data = result.all()
         assert len(data) >= 0, "Expected rows matching KEY with NAMESPACE"
     
     def test_key_literal_with_project_and_namespace(self, conn):
         """Test KEY with both PROJECT and NAMESPACE"""
-        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(PROJECT('my-project'), NAMESPACE('my-namespace'), 'users', 'alice_id')"))
+        result = conn.execute(text("SELECT * FROM users WHERE __key__ = KEY(PROJECT('my-project'), NAMESPACE('my-namespace'), 'users', 'Elmerulia Frixell_id')"))
         data = result.all()
         assert len(data) >= 0, "Expected rows matching KEY with PROJECT and NAMESPACE"
     
@@ -438,7 +438,7 @@ class TestGQLComplexQueries:
         """Test WHERE with various synthetic literals"""
         result = conn.execute(text("""
             SELECT * FROM users 
-            WHERE __key__ = KEY('users', 'alice_id') 
+            WHERE __key__ = KEY('users', 'Elmerulia Frixell_id') 
             AND tags = ARRAY('admin', 'user') 
             AND created_at > DATETIME('2023-01-01T00:00:00Z')
         """))
@@ -465,13 +465,13 @@ class TestGQLComplexQueries:
         data = result.all()
         assert len(data) >= 0, "Expected results from backward comparator query"
         
-        result = conn.execute(text("SELECT * FROM users WHERE 'Alice' = name"))
+        result = conn.execute(text("SELECT * FROM users WHERE 'Elmerulia Frixell' = name"))
         data = result.all()
         assert len(data) >= 0, "Expected results from backward equals query"
     
     def test_fully_qualified_property_in_conditions(self, conn):
         """Test fully qualified properties in WHERE conditions"""
-        result = conn.execute(text("SELECT * FROM users WHERE users.age > 25 AND users.name = 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE users.age > 25 AND users.name = 'Elmerulia Frixell'"))
         data = result.all()
         assert len(data) >= 0, "Expected results from fully qualified property conditions"
     
@@ -479,7 +479,7 @@ class TestGQLComplexQueries:
         """Test nested key path elements"""
         result = conn.execute(text("""
             SELECT * FROM users 
-            WHERE __key__ = KEY('Company', 'tech_corp', 'Department', 'engineering', 'users', 'alice_id')
+            WHERE __key__ = KEY('Company', 'tech_corp', 'Department', 'engineering', 'users', 'Elmerulia Frixell_id')
         """))
         data = result.all()
         assert len(data) >= 0, "Expected results from nested key path query"
@@ -520,11 +520,11 @@ class TestGQLEdgeCases:
     
     def test_string_literal_with_quotes(self, conn):
         """Test string literals with various quote styles"""
-        result = conn.execute(text("SELECT * FROM users WHERE name = 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE name = 'Elmerulia Frixell'"))
         data = result.all()
         assert len(data) >= 0, "Expected results from single-quoted string"
         
-        result = conn.execute(text('SELECT * FROM users WHERE name = "Alice"'))
+        result = conn.execute(text('SELECT * FROM users WHERE name = "Elmerulia Frixell"'))
         data = result.all()
         assert len(data) >= 0, "Expected results from double-quoted string"
     
@@ -544,7 +544,7 @@ class TestGQLKindlessQueries:
     
     def test_kindless_query_with_key_condition(self, conn):
         """Test kindless query with __key__ condition"""
-        result = conn.execute(text("SELECT * WHERE __key__ = KEY('users', 'alice_id')"))
+        result = conn.execute(text("SELECT * WHERE __key__ = KEY('users', 'Elmerulia Frixell_id')"))
         data = result.all()
         assert len(data) >= 0, "Expected results from kindless query with key condition"
     
@@ -650,13 +650,13 @@ class TestGQLStringLiterals:
     
     def test_single_quoted_strings(self, conn):
         """Test single-quoted string literals"""
-        result = conn.execute(text("SELECT * FROM users WHERE name = 'Alice'"))
+        result = conn.execute(text("SELECT * FROM users WHERE name = 'Elmerulia Frixell'"))
         data = result.all()
         assert len(data) >= 0, "Expected results from single-quoted string"
     
     def test_double_quoted_strings(self, conn):
         """Test double-quoted string literals"""
-        result = conn.execute(text('SELECT * FROM users WHERE name = "Alice"'))
+        result = conn.execute(text('SELECT * FROM users WHERE name = "Elmerulia Frixell"'))
         data = result.all()
         assert len(data) >= 0, "Expected results from double-quoted string"
     
@@ -774,7 +774,7 @@ class TestGQLOperatorBehavior:
     def test_equals_as_in_operator(self, conn):
         """Test = operator functioning as IN operator"""
         # value = property is same as value IN property
-        result = conn.execute(text("SELECT * FROM users WHERE 'Alice' = name"))
+        result = conn.execute(text("SELECT * FROM users WHERE 'Elmerulia Frixell' = name"))
         data = result.all()
         assert len(data) >= 0, "Expected results from = operator as IN"
     
@@ -963,7 +963,7 @@ class TestGQLComplexKeyPaths:
                 NAMESPACE('my-namespace'), 
                 'Company', 'tech_corp', 
                 'Department', 'engineering', 
-                'users', 'alice_id'
+                'users', 'Elmerulia Frixell_id'
             )
         """))
         data = result.all()
@@ -998,14 +998,14 @@ class TestGQLOperatorPrecedence:
     def test_and_or_precedence(self, conn):
         """Test AND has higher precedence than OR"""
         # a OR b AND c should parse as a OR (b AND c)
-        result = conn.execute(text("SELECT * FROM users WHERE name = 'Alice' OR age > 30 AND city = 'Tokyo'"))
+        result = conn.execute(text("SELECT * FROM users WHERE name = 'Elmerulia Frixell' OR age > 30 AND city = 'Tokyo'"))
         data = result.all()
         assert len(data) >= 0, "Expected results from AND/OR precedence test"
     
     def test_parentheses_override_precedence(self, conn):
         """Test parentheses can override precedence"""
         # (a OR b) AND c
-        result = conn.execute(text("SELECT * FROM users WHERE (name = 'Alice' OR name = 'Bob') AND age > 25"))
+        result = conn.execute(text("SELECT * FROM users WHERE (name = 'Elmerulia Frixell' OR name = 'Virginia Robertson') AND age > 25"))
         data = result.all()
         assert len(data) >= 0, "Expected results from parentheses precedence override"
 

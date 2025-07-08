@@ -28,7 +28,7 @@ registry.register("datastore", "sqlalchemy_datastore", "DatastoreDialect")
 @pytest.fixture
 def conn():
     """Database connection fixture - implement according to your setup"""
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
+    os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
     engine = create_engine('datastore://python-datastore-sqlalchemy', echo=True)
     conn = engine.connect()
     return conn

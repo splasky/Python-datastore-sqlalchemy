@@ -17,180 +17,141 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
-os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
+def test_select_all_users(conn):
+    result = conn.execute(text("SELECT * FROM users"))
+    data = result.fetchall()
+    assert len(data) == 3, "Expected 3 rows in the users table, but found a different number."
 
-engine = create_engine("datastore://python-datastore-sqlalchemy", echo=True)
-conn = engine.connect()
 
-# Query the database
-# GQL reference can be found at https://cloud.google.com/datastore/docs/gql_reference
-result = conn.execute(text("SELECT * FROM users"))
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 rows in the users table, but found a different number."
+def test_select_users_age_gt_20(conn):
+    result = conn.execute(text("SELECT id, name, age FROM users WHERE age > 20"))
+    data = result.fetchall()
+    assert len(data) == 1, "Expected 1 row with age > 20, but found a different number."
 
-# More Query
-result = conn.execute(text("SELECT id, name, age FROM users WHERE age > 20"))
-data = result.all()
-assert len(data) == 1, "Expected 1 row with age > 20, but found a different number."
 
-# Query with specific conditions
-result = conn.execute(text("SELECT id, name, age FROM users WHERE name = 'Alice'"))
-data = result.all()
-assert len(data) == 1, "Expected 1 row with name 'Alice', but found a different number."
+def test_select_user_named(conn):
+    result = conn.execute(text("SELECT id, name, age FROM users WHERE name = 'Elmerulia Frixell'"))
+    data = result.fetchall()
+    assert len(data) == 1, "Expected 1 row with name 'Elmerulia Frixell', but found a different number."
 
-# Query for keys
-result = conn.execute(text("SELECT __key__ FROM users"))
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 keys in the users table, but found a different number."
 
-result = conn.execute(text("SELECT __key__ WHERE __key__ = KEY('users', 'alice_id')"))
-data = result.all()
-assert len(data) == 1
+def test_select_user_keys(conn):
+    result = conn.execute(text("SELECT __key__ FROM users"))
+    data = result.fetchall()
+    assert len(data) == 3, "Expected 3 keys in the users table, but found a different number."
 
-# Query for specific columns
-result = conn.execute(text("SELECT name, age FROM useers"))
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 rows in the users table, but found a different number."
-for row in data:
-    assert row[0] in [
-        "Alice",
-        "Bob",
-        "Carol",
-    ], "Expected names 'Alice', 'Bob', or 'Carol' in the users table, but found a different name."
-    assert row[1] in [
-        30,
-        24,
-        35,
-    ], "Expected ages 30, 24, or 35 in the users table, but found a different age."
+    result = conn.execute(text("SELECT __key__ WHERE __key__ = KEY('users', 'Elmerulia Frixell_id')"))
+    data = result.fetchall()
+    assert len(data) == 1, "Expected to find one key for 'Elmerulia Frixell_id'"
 
-# Query for fully-qualified property names
-result = conn.execute(text("SELECT users.name, users.age FROM users"))
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 rows in the users table, but found a different number."
-for row in data:
-    assert row[0] in [
-        "Alice",
-        "Bob",
-        "Carol",
-    ], "Expected names 'Alice', 'Bob', or 'Carol' in the users table, but found a different name."
-    assert row[1] in [
-        30,
-        24,
-        35,
-    ], "Expected ages 30, 24, or 35 in the users table, but found a different age."
 
-# Clause Query
-## Distinct query
-result = conn.execute(text("SELECT DISTINCT name FROM users"))
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 distinct names in the users table, but found a different number."
-for row in data:
-    assert row[0] in [
-        "Alice",
-        "Bob",
-        "Carol",
-    ], "Expected names 'Alice', 'Bob', or 'Carol' in the users table, but found a different name."
+def test_select_specific_columns(conn):
+    result = conn.execute(text("SELECT name, age FROM users"))
+    data = result.fetchall()
+    assert len(data) == 3, "Expected 3 rows in the users table"
+    for name, age in data:
+        assert name in ["Elmerulia Frixell", "Virginia Robertson", "Travis 'Ghost' Hayes"], f"Unexpected name: {name}"
+        assert age in [30, 24, 35], f"Unexpected age: {age}"
 
-result = conn.execute(
-    text(
-        "SELECT DISTINCT name, age FROM users WHERE age > 20 ORDER BY age DESC LIMIT 10 OFFSET 5"
+
+def test_fully_qualified_properties(conn):
+    result = conn.execute(text("SELECT users.name, users.age FROM users"))
+    data = result.fetchall()
+    assert len(data) == 3
+    for name, age in data:
+        assert name in ["Elmerulia Frixell", "Virginia Robertson", "Travis 'Ghost' Hayes"]
+        assert age in [30, 24, 35]
+
+
+def test_distinct_name_query(conn):
+    result = conn.execute(text("SELECT DISTINCT name FROM users"))
+    data = result.fetchall()
+    assert len(data) == 3
+    for (name,) in data:
+        assert name in ["Elmerulia Frixell", "Virginia Robertson", "Travis 'Ghost' Hayes"]
+
+
+def test_distinct_name_age_with_conditions(conn):
+    result = conn.execute(
+        text("SELECT DISTINCT name, age FROM users WHERE age > 20 ORDER BY age DESC LIMIT 10 OFFSET 5")
     )
-)
-data = result.all()
-assert (
-    len(data) == 1
-), "Expected 1 distinct row with age > 20, but found a different number."
+    data = result.fetchall()
+    assert len(data) == 1
 
-## Distinct on query
-result = conn.execute(
-    text("SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age DESC")
-)
-data = result.all()
-assert (
-    len(data) == 3
-), "Expected 3 distinct names in the users table, but found a different number."
 
-result = conn.execute(
-    text(
-        "SELECT DISTINCT ON (name) name, age FROM users WHERE age > 20 ORDER BY name ASC, age DESC LIMIT 10"
+def test_distinct_on_query(conn):
+    result = conn.execute(
+        text("SELECT DISTINCT ON (name) name, age FROM users ORDER BY name, age DESC")
     )
-)
-data = result.all()
-assert len(data) == 3, ""
+    data = result.fetchall()
+    assert len(data) == 3
 
-## Order by query
-result = conn.execute(text("SELECT * FROM users ORDER BY age ASC LIMIT 5"))
-data = result.all()
-assert len(data) == 3
-
-## Compound query
-result = conn.execute(
-    text(
-        "SELECT DISTINCT ON (name, age) name, age, city FROM users WHERE age >= 18 AND city = 'Tokyo' ORDER BY name ASC, age DESC LIMIT 20 OFFSET 10"
+    result = conn.execute(
+        text("SELECT DISTINCT ON (name) name, age FROM users WHERE age > 20 ORDER BY name ASC, age DESC LIMIT 10")
     )
-)
-data = result.all()
-assert len(data) == 3
+    data = result.fetchall()
+    assert len(data) == 3
 
-# Aggregration query
-result = conn.execute(
-    text(
-        "AGGREGATE COUNT(*) OVER ( SELECT * FROM tasks WHERE is_done = false AND tag = 'house' )"
+
+def test_order_by_query(conn):
+    result = conn.execute(text("SELECT * FROM users ORDER BY age ASC LIMIT 5"))
+    data = result.fetchall()
+    assert len(data) == 3
+
+
+def test_compound_query(conn):
+    result = conn.execute(
+        text(
+            "SELECT DISTINCT ON (name, age) name, age, city FROM users "
+            "WHERE age >= 18 AND city = 'Tokyo' ORDER BY name ASC, age DESC LIMIT 20 OFFSET 10"
+        )
     )
-)
-data = result.all()
-assert len(data) == 3
+    data = result.fetchall()
+    assert len(data) == 3
 
-result = conn.execute(
-    text(
-        "AGGREGATE COUNT_UP_TO(5) OVER ( SELECT * FROM tasks WHERE is_done = false AND tag = 'house' )"
+
+def test_aggregate_count(conn):
+    result = conn.execute(
+        text("AGGREGATE COUNT(*) OVER ( SELECT * FROM tasks WHERE is_done = false AND tag = 'house' )")
     )
-)
-data = result.all()
-assert len(data) == 3
+    data = result.fetchall()
+    assert len(data) == 3
 
 
-# Insert data (using parameterized query to prevent SQL injection)
-result = conn.execute(text("INSERT INTO users (name, age) VALUES ('Bob', 25)"))
-print(result)
-result = conn.execute(
-    text("INSERT INTO users (name, age) VALUES (:name, :age)"),
-    {"name": "Alice", "age": 30},
-)
-print(result)
+def test_aggregate_count_up_to(conn):
+    result = conn.execute(
+        text("AGGREGATE COUNT_UP_TO(5) OVER ( SELECT * FROM tasks WHERE is_done = false AND tag = 'house' )")
+    )
+    data = result.fetchall()
+    assert len(data) == 3
 
-from src import CloudDatastoreDialect
 
-stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
-compiled = stmt.compile(dialect=CloudDatastoreDialect())
-print(str(compiled))
-with engine.connect() as conn:
-    conn.execute(stmt, {"name": "Alice", "age": 30})
+def test_insert_data(conn):
+    result = conn.execute(text("INSERT INTO users (name, age) VALUES ('Virginia Robertson', 25)"))
+    assert result.rowcount == 1
 
-# Commit the transaction
-conn.commit()
+    result = conn.execute(
+        text("INSERT INTO users (name, age) VALUES (:name, :age)"),
+        {"name": "Elmerulia Frixell", "age": 30}
+    )
+    assert result.rowcount == 1
 
-# Query the database
-result = conn.execute(text("SELECT id, name, age FROM users"))
-rows = result.fetchall()
 
-# Process results
-for row in rows:
-    print(f"ID: {row[0]}, Name: {row[1]}, Age: {row[2]}")
+def test_insert_with_custom_dialect(engine):
+    from src import CloudDatastoreDialect
+    stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
+    compiled = stmt.compile(dialect=CloudDatastoreDialect())
+    print(str(compiled))  # Optional: only for debug
 
-# Clean up
-conn.close()
+    with engine.connect() as conn:
+        conn.execute(stmt, {"name": "Elmerulia Frixell", "age": 30})
+        conn.commit()
+
+
+def test_query_and_process(conn):
+    result = conn.execute(text("SELECT id, name, age FROM users"))
+    rows = result.fetchall()
+    for row in rows:
+        print(f"ID: {row[0]}, Name: {row[1]}, Age: {row[2]}")
