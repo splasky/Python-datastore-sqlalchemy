@@ -19,6 +19,7 @@
 
 import functools
 import re
+import os
 from typing import Optional
 
 from google.api_core import client_info
@@ -76,6 +77,10 @@ def create_datastore_client(
     """
 
     default_project = None
+
+    if os.getenv("DATASTORE_EMULATOR_HOST") is not None:
+        client = datastore.Client(project=project_id)
+        return client
 
     if credentials_base64:
         credentials_info = json.loads(base64.b64decode(credentials_base64))

@@ -17,8 +17,10 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
+import requests
 from datetime import datetime
 from sqlalchemy import Engine
+from requests import Response
 
 from . import _types
 from . import datastore_dbapi
@@ -29,6 +31,10 @@ from .parse_url import parse_url
 from sqlalchemy.engine import default
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
+
+from google.oauth2 import service_account
+from google.auth.transport.requests import AuthorizedSession
+
 
 # Define constants for the dialect
 class DatastoreCompiler(compiler.SQLCompiler):
@@ -332,18 +338,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     ):
         super().__init__(**kwargs)
         self.arraysize = arraysize
-        if (
-            credentials_path is None
-            and os.getenv("GOOGLE_APPLICATION_CREDENTIALS") is None
-        ):
-            raise ValueError(
-                "credentials_path is required if GOOGLE_APPLICATION_CREDENTIALS is not set."
-            )
-        self.credentials_path = (
-            credentials_path
-            if credentials_path
-            else os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        )
+        self.credentials_path = credentials_path
         self.credentials_info = credentials_info
         self.credentials_base64 = credentials_base64
         self.project_id = None
@@ -396,12 +391,21 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.arraysize = arraysize or self.arraysize
         self.list_tables_page_size = list_tables_page_size or self.list_tables_page_size
         self.location = location or self.location
-        credential = credentials_path or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if credential is None:
+        if (
+            credentials_path is None
+            and os.getenv("DATASTORE_EMULATOR_HOST") is None
+            and os.getenv("GOOGLE_APPLICATION_CREDENTIALS") is None
+        ):
             raise ValueError(
                 "credentials_path is required if GOOGLE_APPLICATION_CREDENTIALS is not set."
             )
-        self.credentials_path = credential
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            credentials_path = (
+                credentials_path
+                if credentials_path
+                else os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+        self.credentials_path = credentials_path
         self.credentials_base64 = credentials_base64 or self.credentials_base64
         self.dataset_id = dataset_id
         self.billing_project_id = self.billing_project_id or self.project_id
@@ -415,8 +419,10 @@ class CloudDatastoreDialect(default.DefaultDialect):
                 credentials_base64=self.credentials_base64,
                 project_id=self.billing_project_id,
             )
-            self.project_id = self.project_id or client.project
-            self.billing_project_id = self.billing_project_id or client.project
+            self.project_id = self.project_id if self.project_id else client.project
+            self.billing_project_id = (
+                self.billing_project_id if self.billing_project_id else client.project
+            )
 
         if not self.project_id:
             raise exc.ArgumentError(
@@ -475,40 +481,50 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
     def gql_query(self, cursor, statement, parameters=None, **kwargs):
         """Only execute raw SQL statements."""
-        from google.oauth2 import service_account
-        from google.auth.transport.requests import AuthorizedSession
 
-        # Request service credentials 
-        credentials = service_account.Credentials.from_service_account_file(
-            self.credentials_path, scopes=["https://www.googleapis.com/auth/datastore"]
-        )
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            # Request service credentials
+            credentials = service_account.Credentials.from_service_account_file(
+                self.credentials_path,
+                scopes=["https://www.googleapis.com/auth/datastore"],
+            )
 
-        # Create authorize session
-        authed_session = AuthorizedSession(credentials)
-
-        # Fetch project ID from credentials
-        project_id = credentials.project_id
-
-        # Query url
-        url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
+            # Create authorize session
+            authed_session = AuthorizedSession(credentials)
 
         # GQL payload
         body = {
             "gqlQuery": {
                 "queryString": statement,
-                "allowLiterals": True, # FIXME: This may cacuse sql injection
+                "allowLiterals": True,  # FIXME: This may cacuse sql injection
             }
         }
 
-        # Send GQL request
-        response = authed_session.post(url, json=body)
+        response = Response()
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            # Query url
+            url = f"https://datastore.googleapis.com/v1/projects/{self.project_id}:runQuery"
+            # Send GQL request
+            response = authed_session.post(url, json=body)
+        else:
+            url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{self.project_id}:runQuery"
+            body = {
+                "gqlQuery": {
+                    "queryString": "SELECT id, name, age FROM users WHERE age > @age_limit",
+                    "allowLiterals": True,
+                    "namedBindings": {"age_limit": {"integerValue": 20}},
+                }
+            }
+            response = requests.post(url, json=body)
 
         if response.status_code == 200:
             data = response.json()
             print(data)
         else:
             print("Error:", response.status_code, response.text)
-            raise datastore_dbapi.OperationalError("Failed to execute statement:{statement}")
+            raise datastore_dbapi.OperationalError(
+                "Failed to execute statement:{statement}"
+            )
 
         cursor._query_data = None
         cursor._query_rows = None
@@ -544,6 +560,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
             cursor.rowcount = affected_count
             cursor._closed = True
 
+
 class ParseEntity:
 
     @classmethod
@@ -562,16 +579,16 @@ class ParseEntity:
             row.append(key.get("path", []))
             fields["key"] = ("key", None, None, None, None, None, None)
             for prop_k, prop_v in properties.items():
-                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v) 
+                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v)
                 row.append(prop_value)
                 fields[prop_k] = (prop_k, prop_type, None, None, None, None, None)
             rows.append(tuple(row))
         return rows, fields
-    
+
     @classmethod
     def parse_properties(cls, prop_k: str, prop_v: dict):
         value_type = next(iter(prop_v), None)
-        prop_type = None 
+        prop_type = None
 
         if value_type == "nullValue":
             prop_value = None
@@ -589,9 +606,7 @@ class ParseEntity:
             prop_value = prop_v["stringValue"]
             prop_type = _types.STRING
         elif value_type == "timestampValue":
-            prop_value = datetime.fromisoformat(
-                prop_v["timestampValue"]
-            )
+            prop_value = datetime.fromisoformat(prop_v["timestampValue"])
             prop_type = _types.TIMESTAMP
         elif value_type == "blobValue":
             prop_value = bytes(prop_v["blobValue"])

@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./test_credentials.json"
+os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
 
 # Create test dataset
 from google.cloud import datastore

@@ -1,0 +1,25 @@
+indexes:
+- kind: users
+  properties:
+  - name: name
+  - name: age
+- kind: users
+  properties:
+  - name: name
+  - name: age
+  - name: country
+  - name: create_time
+  - name: description
+  - name: settings
+- kind: tasks
+  properties:
+  - name: task
+  - name: content
+  - name: is_done
+  - name: tag
+  - name: location
+  - name: assign_user
+  - name: reward
+  - name: equipment
+  - name: encrypted_formula
+  - name: additional_notes
