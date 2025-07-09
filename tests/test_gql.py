@@ -31,7 +31,7 @@ class TestGQLBasicQueries:
     
     def test_select_specific_properties(self, conn):
         """Test SELECT property1, property2 FROM kind"""
-        result = conn.execute(text("SELECT id, name, age FROM users"))
+        result = conn.execute(text("SELECT name, age FROM users"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows with specific properties"
     
@@ -106,27 +106,29 @@ class TestGQLWhereConditions:
     
     def test_where_greater_than(self, conn):
         """Test WHERE property > value"""
-        result = conn.execute(text("SELECT * FROM users WHERE age > 25"))
+        result = conn.execute(text("SELECT * FROM users WHERE age > 15"))
         data = result.all()
-        assert len(data) == 2, "Expected 2 rows where age > 25"
+        assert len(data) == 2, "Expected 2 rows where age > 15"
     
     def test_where_greater_than_equal(self, conn):
         """Test WHERE property >= value"""
-        result = conn.execute(text("SELECT * FROM users WHERE age >= 30"))
+        result = conn.execute(text("SELECT * FROM users WHERE age >= 25"))
         data = result.all()
-        assert len(data) == 2, "Expected 2 rows where age >= 30"
+        assert len(data) == 1, "Expected 2 rows where age >= 25"
+        assert data[0].name == "Travis 'Ghost' Hayes" 
     
     def test_where_less_than(self, conn):
         """Test WHERE property < value"""
-        result = conn.execute(text("SELECT * FROM users WHERE age < 30"))
+        result = conn.execute(text("SELECT * FROM users WHERE age < 20"))
         data = result.all()
-        assert len(data) == 1, "Expected 1 row where age < 30"
+        assert len(data) == 2, "Expected 2 row where age < 20"
     
     def test_where_less_than_equal(self, conn):
         """Test WHERE property <= value"""
-        result = conn.execute(text("SELECT * FROM users WHERE age <= 24"))
+        result = conn.execute(text("SELECT * FROM users WHERE age <= 14"))
         data = result.all()
         assert len(data) == 1, "Expected 1 row where age <= 24"
+        assert data[0].name == "Virginia Robertson"
     
     def test_where_is_null(self, conn):
         """Test WHERE property IS NULL"""
