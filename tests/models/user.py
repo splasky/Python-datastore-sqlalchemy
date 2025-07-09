@@ -17,7 +17,7 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 from . import Base
-from sqlalchemy import Column, Integer, String, TIMESTAMP, JSON
+from sqlalchemy import Column, Integer, String, DATETIME, JSON
 
 class User(Base):
 
@@ -26,7 +26,7 @@ class User(Base):
     name = Column(String)  # Array of strings for access
     age = Column(Integer)
     country = Column(String)
-    create_time = Column(TIMESTAMP)
+    create_time = Column(DATETIME)
     description = Column(String)
     settings = Column(JSON)
 
