@@ -1,4 +1,4 @@
-# Copyright (c) 2025 The sqlalchemy-datastore Authors
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
