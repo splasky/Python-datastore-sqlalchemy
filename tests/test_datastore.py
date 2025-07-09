@@ -25,7 +25,7 @@ def test_select_all_users(conn, test_datasets):
     assert len(data) == 3, "Expected 3 rows in the users table, but found a different number."
 
 def test_select_users_with_none_result(conn, test_datasets):
-    result = conn.execute(text("SELECT * FROM users where age > 99999"))
+    result = conn.execute(text("SELECT * FROM users where age > 99999999"))
     data = result.all()
     assert len(data) == 0, "Should return empty list"
 

@@ -501,22 +501,11 @@ class CloudDatastoreDialect(default.DefaultDialect):
         }
 
         response = Response()
-        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            # Query url
-            url = f"https://datastore.googleapis.com/v1/projects/{self.project_id}:runQuery"
-            # Send GQL request
-            response = authed_session.post(url, json=body)
-        else:
+        url = f"https://datastore.googleapis.com/v1/projects/{self.project_id}:runQuery"
+        if os.getenv("DATASTORE_EMULATOR_HOST") is not None:
             url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{self.project_id}:runQuery"
-            body = {
-                "gqlQuery": {
-                    "queryString": "SELECT id, name, age FROM users WHERE age > @age_limit",
-                    "allowLiterals": True,
-                    "namedBindings": {"age_limit": {"integerValue": 20}},
-                }
-            }
-            response = requests.post(url, json=body)
 
+        response = requests.post(url, json=body)
         if response.status_code == 200:
             data = response.json()
             print(data)
@@ -525,17 +514,17 @@ class CloudDatastoreDialect(default.DefaultDialect):
             raise datastore_dbapi.OperationalError(
                 "Failed to execute statement:{statement}"
             )
-
-        cursor._query_data = None
-        cursor._query_rows = None
-        cursor.rowcount = -1
-        cursor.description = None
+        
+        cursor._query_data = iter([])
+        cursor._query_rows = iter([])
+        cursor.rowcount = 0
+        cursor.description = [(None, None, None, None, None, None, None)]
         cursor._last_executed = statement
         cursor._parameters = parameters or {}
 
         data = data.get("batch", {}).get("entityResults", [])
-        if data is None:
-            return
+        if len(data) == 0:
+            return  # Everything is already set for an empty result
 
         # Determine if this statement is expected to return rows (e.g., SELECT)
         # You'll need a way to figure this out based on 'statement' or a flag passed to your custom execute method.
