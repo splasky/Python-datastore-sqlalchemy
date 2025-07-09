@@ -212,6 +212,7 @@ def test_datasets(datastore_client):
         batch.put(task3)
         batch.commit()
 
+    time.sleep(1) # wait for batch finish
     query =  client.query(kind="users")
     users = list(query.fetch())
     assert len(users) == 3
