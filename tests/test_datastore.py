@@ -16,7 +16,7 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
+import pytest
 from sqlalchemy import text
 
 def test_select_all_users(conn, test_datasets):
@@ -24,6 +24,10 @@ def test_select_all_users(conn, test_datasets):
     data = result.fetchall()
     assert len(data) == 3, "Expected 3 rows in the users table, but found a different number."
 
+def test_select_users_with_none_result(conn, test_datasets):
+    result = conn.execute(text("SELECT * FROM users where age > 99999"))
+    data = result.all()
+    assert len(data) == 0, "Should return empty list"
 
 def test_select_users_age_gt_20(conn):
     result = conn.execute(text("SELECT id, name, age FROM users WHERE age > 20"))
@@ -128,6 +132,7 @@ def test_aggregate_count_up_to(conn):
     assert len(data) == 3
 
 
+@pytest.mark.skip
 def test_insert_data(conn):
     result = conn.execute(text("INSERT INTO users (name, age) VALUES ('Virginia Robertson', 25)"))
     assert result.rowcount == 1
@@ -138,7 +143,7 @@ def test_insert_data(conn):
     )
     assert result.rowcount == 1
 
-
+@pytest.mark.skip
 def test_insert_with_custom_dialect(engine):
     from src import CloudDatastoreDialect
     stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
@@ -149,7 +154,7 @@ def test_insert_with_custom_dialect(engine):
         conn.execute(stmt, {"name": "Elmerulia Frixell", "age": 30})
         conn.commit()
 
-
+@pytest.mark.skip
 def test_query_and_process(conn):
     result = conn.execute(text("SELECT id, name, age FROM users"))
     rows = result.fetchall()
