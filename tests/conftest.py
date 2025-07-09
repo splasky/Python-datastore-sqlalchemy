@@ -115,6 +115,7 @@ def test_datasets(datastore_client):
     user1["create_time"] = datetime(2025, 1, 1, 1, 2, 3, 4, tzinfo=timezone.utc)
     user1["description"] = "An aspiring alchemist and daughter of Rorona, aiming to surpass her mother and become the greatest alchemist in Arland. Cheerful, hardworking, and full of curiosity."
     user1["settings"] = None
+    user1["tags"] = "user"
 
     # user2
     user2 = datastore.Entity(client.key("users"))
@@ -129,6 +130,7 @@ def test_datasets(datastore_client):
         "to detect Neuroi via sound/magic waves, and fights alongside her familiar Moffy."
     )
     user2["settings"] = None
+    user2["tags"] = "user"
 
     # user3
     user3 = datastore.Entity(client.key("users"))
@@ -147,6 +149,7 @@ def test_datasets(datastore_client):
         "bulletproof 'Declasse Stallion' – a steel companion more loyal than any human."
     )
     user3["settings"] = None
+    user3["tags"] = "admin"
 
     with client.batch() as batch:
         batch.put(user1)
@@ -212,12 +215,26 @@ def test_datasets(datastore_client):
         batch.put(task3)
         batch.commit()
 
-    time.sleep(3) # wait for batch finish
+    # Wait for batch complete
+    while True:
+        time.sleep(1)
+        query =  client.query(kind="users")
+        users = list(query.fetch())
+        if len(users) == 3:
+            break
+
     query =  client.query(kind="users")
     users = list(query.fetch())
     assert len(users) == 3
 
-    time.sleep(3) # wait for batch finish
+    # Wait for batch complete
+    while True:
+        time.sleep(1)
+        query =  client.query(kind="tasks")
+        tasks = list(query.fetch())
+        if len(tasks) == 3:
+            break
+
     query = client.query(kind="tasks")
     tasks = list(query.fetch())
     assert len(tasks) == 3

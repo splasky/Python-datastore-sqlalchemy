@@ -96,6 +96,7 @@ class TestGQLWhereConditions:
         result = conn.execute(text("SELECT * FROM users WHERE name = 'Elmerulia Frixell'"))
         data = result.all()
         assert len(data) == 1, "Expected 1 row where name equals 'Elmerulia Frixell'"
+        assert data[0].name == 'Elmerulia Frixell'
     
     def test_where_not_equals(self, conn):
         """Test WHERE property != value"""
@@ -129,9 +130,9 @@ class TestGQLWhereConditions:
     
     def test_where_is_null(self, conn):
         """Test WHERE property IS NULL"""
-        result = conn.execute(text("SELECT * FROM users WHERE email IS NULL"))
+        result = conn.execute(text("SELECT * FROM users WHERE settings IS NULL"))
         data = result.all()
-        assert len(data) >= 0, "Expected rows where email is null"
+        assert len(data) > 0, "Expected rows where settings is null"
     
     def test_where_in_list(self, conn):
         """Test WHERE property IN (value1, value2, ...)"""
@@ -149,7 +150,8 @@ class TestGQLWhereConditions:
         """Test WHERE property CONTAINS value"""
         result = conn.execute(text("SELECT * FROM users WHERE tags CONTAINS 'admin'"))
         data = result.all()
-        assert len(data) >= 0, "Expected rows where tags contains 'admin'"
+        assert len(data) == 1, "Expected rows where tags contains 'admin'"
+        assert data[0].name == "Travis 'Ghost' Hayes"
     
     def test_where_has_ancestor(self, conn):
         """Test WHERE __key__ HAS ANCESTOR key"""
@@ -200,24 +202,36 @@ class TestGQLOrderBy:
         result = conn.execute(text("SELECT * FROM users ORDER BY age ASC"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows ordered by age ascending"
+        assert data[0].name == "Virginia Robertson"
+        assert data[1].name == "Elmerulia Frixell"
+        assert data[2].name == "Travis 'Ghost' Hayes"
     
     def test_order_by_single_property_desc(self, conn):
         """Test ORDER BY property DESC"""
         result = conn.execute(text("SELECT * FROM users ORDER BY age DESC"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows ordered by age descending"
+        assert data[0].name == "Travis 'Ghost' Hayes"
+        assert data[1].name == "Elmerulia Frixell"
+        assert data[2].name == "Virginia Robertson"
     
     def test_order_by_multiple_properties(self, conn):
         """Test ORDER BY property1, property2 ASC/DESC"""
         result = conn.execute(text("SELECT * FROM users ORDER BY name ASC, age DESC"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows ordered by name ASC, age DESC"
+        assert data[0].name == "Travis 'Ghost' Hayes"
+        assert data[1].name == "Elmerulia Frixell"
+        assert data[2].name == "Virginia Robertson"
     
     def test_order_by_without_direction(self, conn):
         """Test ORDER BY property (default ASC)"""
         result = conn.execute(text("SELECT * FROM users ORDER BY name"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows ordered by name (default ASC)"
+        assert data[0].name == "Elmerulia Frixell"
+        assert data[1].name == "Travis 'Ghost' Hayes"
+        assert data[2].name == "Virginia Robertson"
 
 
 class TestGQLLimitOffset:
