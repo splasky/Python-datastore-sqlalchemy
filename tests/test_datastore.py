@@ -19,7 +19,7 @@
 
 from sqlalchemy import text
 
-def test_select_all_users(conn):
+def test_select_all_users(conn, test_datasets):
     result = conn.execute(text("SELECT * FROM users"))
     data = result.fetchall()
     assert len(data) == 3, "Expected 3 rows in the users table, but found a different number."

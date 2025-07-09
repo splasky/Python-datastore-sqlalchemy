@@ -16,8 +16,19 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-[pytest]
-addopts = --ruff --mypy --cov --cov-report=html
-pythonpath = .
-testpaths = tests
-python_files = test_*.py
+from . import Base
+from sqlalchemy import Column, Integer, String, TIMESTAMP, JSON
+
+class User(Base):
+
+    __tablename__ = "users"  # This will be the 'kind' in Datastore
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Datastore ID will map here
+    name = Column(String)  # Array of strings for access
+    age = Column(Integer)
+    country = Column(String)
+    create_time = Column(TIMESTAMP)
+    description = Column(String)
+    settings = Column(JSON)
+
+    def __repr__(self):
+        return f"<User(id={self.id}, name='{self.name}', age='{self.age}', country='{self.country}, create_time='{str(self.create_time)}', description='{self.description}', settings='{self.settings}')>"
