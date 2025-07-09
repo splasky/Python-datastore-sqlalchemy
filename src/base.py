@@ -593,7 +593,7 @@ class ParseEntity:
         elif value_type == "doubleValue":
             prop_value = float(prop_v["doubleValue"])
             prop_type = _types.FLOAT64
-        elif value_type == "stringValue":
+        elif value_type == "stringValue" or "stringValue" in prop_v:
             prop_value = prop_v["stringValue"]
             prop_type = _types.STRING
         elif value_type == "timestampValue":
