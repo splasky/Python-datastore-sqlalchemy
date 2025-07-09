@@ -502,10 +502,12 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
         response = Response()
         url = f"https://datastore.googleapis.com/v1/projects/{self.project_id}:runQuery"
-        if os.getenv("DATASTORE_EMULATOR_HOST") is not None:
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            response = authed_session.post(url, json=body)
+        else:
             url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{self.project_id}:runQuery"
+            response = requests.post(url, json=body)
 
-        response = requests.post(url, json=body)
         if response.status_code == 200:
             data = response.json()
             print(data)
