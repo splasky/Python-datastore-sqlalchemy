@@ -62,7 +62,7 @@ setup(
     },
     packages=find_packages(include=["sqlalchemy_datastore"]),
     include_package_data=True,
-    install_requires=["SQLAlchemy>=2.0.0",],
+    install_requires=["sqlalchemy>=1.4.16,<3.0.0",],
     zip_safe=False,
     entry_points={
         "sqlalchemy.dialects": ["datastore = sqlalchemy_datastore:CloudDatastoreDialect"]
