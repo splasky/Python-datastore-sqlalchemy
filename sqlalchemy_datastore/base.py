@@ -19,7 +19,6 @@
 import os
 import requests
 from datetime import datetime
-from sqlalchemy import Engine
 from requests import Response
 
 from . import _types
