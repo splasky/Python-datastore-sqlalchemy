@@ -300,7 +300,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     """SQLAlchemy dialect for Google Cloud Datastore."""
 
     name = "datastore"
-    driver = "google"
+    driver = "datastore"
 
     # Specify the compiler classes
     statement_compiler = DatastoreCompiler

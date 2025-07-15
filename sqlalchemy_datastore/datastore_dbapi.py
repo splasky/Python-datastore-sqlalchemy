@@ -84,7 +84,7 @@ Column = collections.namedtuple(
 type_map = {
     str: types.String,
     int: types.NUMERIC,
-    float: types.DOUBLE,
+    float: types.FLOAT,
     bool: types.BOOLEAN,
     bytes: types.BINARY,
     datetime: types.DATETIME,
