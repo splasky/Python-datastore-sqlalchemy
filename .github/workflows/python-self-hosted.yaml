@@ -26,7 +26,7 @@ jobs:
         install_components: 'cloud-datastore-emulator'
 
     - name: 'Use gcloud CLI'
-      run: 'gcloud info'
+      run: 'gcloud config set project python-datastore-sqlalchemy'
 
     - name: Install dependencies
       run: |

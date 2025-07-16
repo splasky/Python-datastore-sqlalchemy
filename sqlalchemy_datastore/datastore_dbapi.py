@@ -16,14 +16,19 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
+import os
 from google.cloud import datastore
-from google.cloud.datastore.entity import Entity
-from google.cloud.datastore import Key
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
 from datetime import datetime
 from typing import Optional
+from . import _types
+import requests
+from datetime import datetime
+from requests import Response
+from google.oauth2 import service_account
+from google.auth.transport.requests import AuthorizedSession
+
 import collections
 
 apilevel = "2.0"
@@ -107,10 +112,84 @@ class Cursor:
         self._closed = False
         self.description = None
 
-    def execute(self, operation: Optional[dict], parameters=None):
+    def execute(self, statements, parameters=None):
         """Execute a Datastore operation."""
         if self._closed:
             raise Error("Cursor is closed.")
+        self.gql_query(statements, parameters)
+
+    def gql_query(self, statement, parameters=None, **kwargs):
+        """Only execute raw SQL statements."""
+
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            # Request service credentials
+            credentials = service_account.Credentials.from_service_account_file(
+                self.connection.credentials_path,
+                scopes=["https://www.googleapis.com/auth/datastore"],
+            )
+
+            # Create authorize session
+            authed_session = AuthorizedSession(credentials)
+
+        # GQL payload
+        body = {
+            "gqlQuery": {
+                "queryString": statement,
+                "allowLiterals": True,  # FIXME: This may cacuse sql injection
+            }
+        }
+
+        response = Response()
+        project_id = self._datastore_client.project
+        url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
+        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
+            response = authed_session.post(url, json=body)
+        else:
+            url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{project_id}:runQuery"
+            response = requests.post(url, json=body)
+
+        if response.status_code == 200:
+            data = response.json()
+            print(data)
+        else:
+            print("Error:", response.status_code, response.text)
+            raise OperationalError(
+                "Failed to execute statement:{statement}"
+            )
+        
+        self._query_data = iter([])
+        self._query_rows = iter([])
+        self.rowcount = 0
+        self.description = [(None, None, None, None, None, None, None)]
+        self._last_executed = statement
+        self._parameters = parameters or {}
+
+        data = data.get("batch", {}).get("entityResults", [])
+        if len(data) == 0:
+            return  # Everything is already set for an empty result
+
+        # Determine if this statement is expected to return rows (e.g., SELECT)
+        # You'll need a way to figure this out based on 'statement' or a flag passed to your custom execute method.
+        # Example (simplified check, you might need a more robust parsing or flag):
+        is_select_statement = statement.upper().strip().startswith("SELECT")
+
+        if is_select_statement:
+            self._closed = (
+                False  # For SELECT, cursor should remain open to fetch rows
+            )
+
+            rows, fields = ParseEntity.parse(data)
+            fields = list(fields.values())
+            self._query_data = iter(rows)
+            self._query_rows = iter(rows)
+            self.rowcount = len(rows)
+            self.description = fields if len(fields) > 0 else None
+        else:
+            # For INSERT/UPDATE/DELETE, the operation is complete, no rows to yield
+            # For INSERT/UPDATE/DELETE, the operation is complete, set rowcount if possible
+            affected_count = len(data) if isinstance(data, list) else 0
+            self.rowcount = affected_count
+            self._closed = True
 
     def execute_orm(self, operation: Optional[dict], parameters=None):
         if parameters is None:
@@ -315,3 +394,74 @@ class Connection:
 
 def connect(client=None):
     return Connection(client)
+
+class ParseEntity:
+
+    @classmethod
+    def parse(cls, data: dict):
+        """
+        Parse the datastore entity
+
+        dict is a json base entity
+        """
+        rows = []
+        fields = {}
+        for entity in data:
+            row = []
+            properties = entity.get("entity", {}).get("properties", {})
+            key = entity.get("entity", {}).get("key", {})
+            row.append(key.get("path", []))
+            fields["key"] = ("key", None, None, None, None, None, None)
+            for prop_k, prop_v in properties.items():
+                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v)
+                row.append(prop_value)
+                fields[prop_k] = (prop_k, prop_type, None, None, None, None, None)
+            rows.append(tuple(row))
+        return rows, fields
+
+    @classmethod
+    def parse_properties(cls, prop_k: str, prop_v: dict):
+        value_type = next(iter(prop_v), None)
+        prop_type = None
+
+        if value_type == "nullValue":
+            prop_value = None
+            prop_type = _types.NONE_TYPES
+        elif value_type == "booleanValue":
+            prop_value = bool(prop_v["booleanValue"])
+            prop_type = _types.BOOL
+        elif value_type == "integerValue":
+            prop_value = int(prop_v["integerValue"])
+            prop_type = _types.INTEGER
+        elif value_type == "doubleValue":
+            prop_value = float(prop_v["doubleValue"])
+            prop_type = _types.FLOAT64
+        elif value_type == "stringValue" or "stringValue" in prop_v:
+            prop_value = prop_v["stringValue"]
+            prop_type = _types.STRING
+        elif value_type == "timestampValue":
+            prop_value = datetime.fromisoformat(prop_v["timestampValue"])
+            prop_type = _types.TIMESTAMP
+        elif value_type == "blobValue":
+            prop_value = bytes(prop_v["blobValue"])
+            prop_type = _types.BYTES
+        elif value_type == "geoPointValue":
+            prop_value = prop_v["geoPointValue"]
+            prop_type = _types.GEOPOINT
+        elif value_type == "keyValue":
+            prop_value = prop_v["keyValue"]["path"]
+            prop_type = _types.KEY_TYPE
+        elif value_type == "arrayValue":
+            prop_value = []
+            for entity in prop_v["arrayValue"]["values"]:
+                e_v, _ = ParseEntity.parse_properties(prop_k, entity)
+                prop_value.append(e_v)
+            prop_type = _types.ARRAY
+        elif value_type == "dictValue":
+            prop_value = prop_v["dictValue"]
+            prop_type = _types.STRUCT_FIELD_TYPES
+        elif value_type == "entityValue":
+            # FIXME: not implemented
+            prop_value = prop_v["entityValue"]["properties"]
+            raise NotImplementedError("entityValue is not implemented yet")
+        return prop_value, prop_type

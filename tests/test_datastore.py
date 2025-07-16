@@ -18,13 +18,14 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import pytest
 from sqlalchemy import text
+from sqlalchemy_datastore import CloudDatastoreDialect
 
-def test_select_all_users(conn, test_datasets):
+def test_select_all_users(conn):
     result = conn.execute(text("SELECT * FROM users"))
     data = result.fetchall()
     assert len(data) == 3, "Expected 3 rows in the users table, but found a different number."
 
-def test_select_users_with_none_result(conn, test_datasets):
+def test_select_users_with_none_result(conn):
     result = conn.execute(text("SELECT * FROM users where age > 99999999"))
     data = result.all()
     assert len(data) == 0, "Should return empty list"
@@ -145,7 +146,6 @@ def test_insert_data(conn):
 
 @pytest.mark.skip
 def test_insert_with_custom_dialect(engine):
-    from src import CloudDatastoreDialect
     stmt = text("INSERT INTO users (name, age) VALUES (:name, :age)")
     compiled = stmt.compile(dialect=CloudDatastoreDialect())
     print(str(compiled))  # Optional: only for debug

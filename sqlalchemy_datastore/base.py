@@ -17,9 +17,6 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
-import requests
-from datetime import datetime
-from requests import Response
 
 from . import _types
 from . import datastore_dbapi
@@ -30,10 +27,6 @@ from .parse_url import parse_url
 from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
-
-from google.oauth2 import service_account
-from google.auth.transport.requests import AuthorizedSession
-
 
 # Define constants for the dialect
 class DatastoreCompiler(compiler.SQLCompiler):
@@ -429,6 +422,9 @@ class CloudDatastoreDialect(default.DefaultDialect):
             )
 
         self._client = client
+        setattr(self._client, "credentials_path", self.credentials_path)
+        setattr(self._client, "credentials_info", self.credentials_info)
+        setattr(self._client, "credentials_base64", self.credentials_base64)
         return ([], {"client": client})
 
     def get_schema_names(self, connection, **kw):
@@ -466,149 +462,4 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
     def do_execute(self, cursor, statement, parameters, context=None):
         """Execute a statement."""
-        # cursor.execute(statement, parameters)
-        self.gql_query(cursor, statement, parameters)
-
-    def gql_query(self, cursor, statement, parameters=None, **kwargs):
-        """Only execute raw SQL statements."""
-
-        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            # Request service credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                self.credentials_path,
-                scopes=["https://www.googleapis.com/auth/datastore"],
-            )
-
-            # Create authorize session
-            authed_session = AuthorizedSession(credentials)
-
-        # GQL payload
-        body = {
-            "gqlQuery": {
-                "queryString": statement,
-                "allowLiterals": True,  # FIXME: This may cacuse sql injection
-            }
-        }
-
-        response = Response()
-        url = f"https://datastore.googleapis.com/v1/projects/{self.project_id}:runQuery"
-        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            response = authed_session.post(url, json=body)
-        else:
-            url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{self.project_id}:runQuery"
-            response = requests.post(url, json=body)
-
-        if response.status_code == 200:
-            data = response.json()
-            print(data)
-        else:
-            print("Error:", response.status_code, response.text)
-            raise datastore_dbapi.OperationalError(
-                "Failed to execute statement:{statement}"
-            )
-        
-        cursor._query_data = iter([])
-        cursor._query_rows = iter([])
-        cursor.rowcount = 0
-        cursor.description = [(None, None, None, None, None, None, None)]
-        cursor._last_executed = statement
-        cursor._parameters = parameters or {}
-
-        data = data.get("batch", {}).get("entityResults", [])
-        if len(data) == 0:
-            return  # Everything is already set for an empty result
-
-        # Determine if this statement is expected to return rows (e.g., SELECT)
-        # You'll need a way to figure this out based on 'statement' or a flag passed to your custom execute method.
-        # Example (simplified check, you might need a more robust parsing or flag):
-        is_select_statement = statement.upper().strip().startswith("SELECT")
-
-        if is_select_statement:
-            cursor._closed = (
-                False  # For SELECT, cursor should remain open to fetch rows
-            )
-
-            rows, fields = ParseEntity.parse(data)
-            fields = list(fields.values())
-            cursor._query_data = iter(rows)
-            cursor._query_rows = iter(rows)
-            cursor.rowcount = len(rows)
-            cursor.description = fields if len(fields) > 0 else None
-        else:
-            # For INSERT/UPDATE/DELETE, the operation is complete, no rows to yield
-            # For INSERT/UPDATE/DELETE, the operation is complete, set rowcount if possible
-            affected_count = len(data) if isinstance(data, list) else 0
-            cursor.rowcount = affected_count
-            cursor._closed = True
-
-
-class ParseEntity:
-
-    @classmethod
-    def parse(cls, data: dict):
-        """
-        Parse the datastore entity
-
-        dict is a json base entity
-        """
-        rows = []
-        fields = {}
-        for entity in data:
-            row = []
-            properties = entity.get("entity", {}).get("properties", {})
-            key = entity.get("entity", {}).get("key", {})
-            row.append(key.get("path", []))
-            fields["key"] = ("key", None, None, None, None, None, None)
-            for prop_k, prop_v in properties.items():
-                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v)
-                row.append(prop_value)
-                fields[prop_k] = (prop_k, prop_type, None, None, None, None, None)
-            rows.append(tuple(row))
-        return rows, fields
-
-    @classmethod
-    def parse_properties(cls, prop_k: str, prop_v: dict):
-        value_type = next(iter(prop_v), None)
-        prop_type = None
-
-        if value_type == "nullValue":
-            prop_value = None
-            prop_type = _types.NONE_TYPES
-        elif value_type == "booleanValue":
-            prop_value = bool(prop_v["booleanValue"])
-            prop_type = _types.BOOL
-        elif value_type == "integerValue":
-            prop_value = int(prop_v["integerValue"])
-            prop_type = _types.INTEGER
-        elif value_type == "doubleValue":
-            prop_value = float(prop_v["doubleValue"])
-            prop_type = _types.FLOAT64
-        elif value_type == "stringValue" or "stringValue" in prop_v:
-            prop_value = prop_v["stringValue"]
-            prop_type = _types.STRING
-        elif value_type == "timestampValue":
-            prop_value = datetime.fromisoformat(prop_v["timestampValue"])
-            prop_type = _types.TIMESTAMP
-        elif value_type == "blobValue":
-            prop_value = bytes(prop_v["blobValue"])
-            prop_type = _types.BYTES
-        elif value_type == "geoPointValue":
-            prop_value = prop_v["geoPointValue"]
-            prop_type = _types.GEOPOINT
-        elif value_type == "keyValue":
-            prop_value = prop_v["keyValue"]["path"]
-            prop_type = _types.KEY_TYPE
-        elif value_type == "arrayValue":
-            prop_value = []
-            for entity in prop_v["arrayValue"]["values"]:
-                e_v, _ = ParseEntity.parse_properties(prop_k, entity)
-                prop_value.append(e_v)
-            prop_type = _types.ARRAY
-        elif value_type == "dictValue":
-            prop_value = prop_v["dictValue"]
-            prop_type = _types.STRUCT_FIELD_TYPES
-        elif value_type == "entityValue":
-            # FIXME: not implemented
-            prop_value = prop_v["entityValue"]["properties"]
-            raise NotImplementedError("entityValue is not implemented yet")
-        return prop_value, prop_type
+        cursor.execute(statement, parameters)
