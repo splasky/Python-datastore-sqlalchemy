@@ -390,14 +390,14 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.arraysize = arraysize or self.arraysize
         self.list_tables_page_size = list_tables_page_size or self.list_tables_page_size
         self.location = location or self.location
-        if (
-            credentials_path is None
-            and os.getenv("DATASTORE_EMULATOR_HOST") is None
-            and os.getenv("GOOGLE_APPLICATION_CREDENTIALS") is None
-        ):
-            raise ValueError(
-                "credentials_path is required if GOOGLE_APPLICATION_CREDENTIALS is not set."
-            )
+        # if (
+        #     credentials_path is None
+        #     and os.getenv("DATASTORE_EMULATOR_HOST") is None
+        #     and os.getenv("GOOGLE_APPLICATION_CREDENTIALS") is None
+        # ):
+        #     raise ValueError(
+        #         "credentials_path is required if GOOGLE_APPLICATION_CREDENTIALS is not set."
+        #     )
         if os.getenv("DATASTORE_EMULATOR_HOST") is None:
             credentials_path = (
                 credentials_path
