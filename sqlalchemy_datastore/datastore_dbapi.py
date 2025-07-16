@@ -301,13 +301,16 @@ class Connection:
         return Cursor(self)
 
     def begin(self):
-        pass
+        print("datastore connection transaction begin")
 
     def commit(self):
-        pass
+        print("datastore connection commit")
 
     def rollback(self):
-        pass
+        print("datastore connection rollback")
+
+    def close(self):
+        print("Closing connection")
 
 
 def connect(client=None):
