@@ -27,7 +27,7 @@ from ._helpers import create_datastore_client
 from ._types import _get_sqla_column_type
 from .parse_url import parse_url
 
-from sqlalchemy.engine import default
+from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
 
@@ -431,26 +431,21 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self._client = client
         return ([], {"client": client})
 
-    def get_table_names(self, connection, schema=None, **kw):
-        """Retrieve table names from the database."""
-        if isinstance(connection, Engine):
-            connection = connection.connect()
+    def get_schema_names(self, connection, **kw):
+        return self.get_table_names(connection, None)
 
-        client = connection.connection._client
+    def get_table_names(self, connection, schema: str | None = None, **kw):
+        client = self._client
         query = client.query(kind="__kind__")
-        query = query.keys_only()
         kinds = list(query.fetch())
         result = []
         for kind in kinds:
             result.append(kind.key.name)
         return result
 
-    def get_columns(self, connection, table_name, schema=None, **kw):
+    def get_columns(connection: Connection, table_name: str, schema: str | None = None, **kw):
         """Retrieve column information from the database."""
-        if isinstance(connection, Engine):
-            connection = connection.connect()
-
-        client = connection.connection._client
+        client = self._client
         query = client.query(kind=table_name)
         ancestor_key = client.key("__kind__", table_name)
         query = client.query(kind="__property__", ancestor=ancestor_key)
@@ -461,11 +456,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
             columns.append(
                 {
                     "name": property.key.name,
-                    "type": _get_sqla_column_type(
-                        property.get("property_representation")[0]
-                        if property.get("property_representation", None) is not None
-                        else "STRING"
-                    ),
+                    "type": _types.STRING, # FIXME: Prototype usage, change later
                     "nullable": True,
                     "comment": "",
                     "default": None,
