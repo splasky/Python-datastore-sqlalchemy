@@ -123,8 +123,8 @@ class Cursor:
 
         if os.getenv("DATASTORE_EMULATOR_HOST") is None:
             # Request service credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                self.connection.credentials_path,
+            credentials = service_account.Credentials.from_service_account_info(
+                self._datastore_client.credentials_info,
                 scopes=["https://www.googleapis.com/auth/datastore"],
             )
 
