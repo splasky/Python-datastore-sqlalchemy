@@ -21,7 +21,7 @@ from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any, List, Tuple 
 from . import _types
 import requests
 from datetime import datetime
@@ -404,20 +404,50 @@ class ParseEntity:
 
         dict is a json base entity
         """
-        rows = []
-        fields = {}
-        for entity in data:
-            row = []
-            properties = entity.get("entity", {}).get("properties", {})
-            key = entity.get("entity", {}).get("key", {})
-            row.append(key.get("path", []))
-            fields["key"] = ("key", None, None, None, None, None, None)
-            for prop_k, prop_v in properties.items():
-                prop_value, prop_type = ParseEntity.parse_properties(prop_k, prop_v)
-                row.append(prop_value)
-                fields[prop_k] = (prop_k, prop_type, None, None, None, None, None)
-            rows.append(tuple(row))
-        return rows, fields
+        all_property_names_set = set()
+        for entity_data in data:
+            properties = entity_data.get("entity", {}).get("properties", {})
+            all_property_names_set.update(properties.keys())
+
+        # sort by names
+        sorted_property_names = sorted(list(all_property_names_set))
+        FieldDict = dict
+
+        final_fields: FieldDict[str, Tuple] = FieldDict()
+        final_rows: List[Tuple] = []
+
+        # Add key fields, always the first fields
+        final_fields["key"] = ("key", None, None, None, None, None, None) # None for type initially
+
+        # Add other fields
+        for prop_name in sorted_property_names:
+            final_fields[prop_name] = (prop_name, None, None, None, None, None, None)
+
+        # Append the properties
+        for entity_data in data:
+            row_values: List[Any] = []
+            
+            properties = entity_data.get("entity", {}).get("properties", {})
+            key = entity_data.get("entity", {}).get("key", {})
+            # add key fileds 
+            row_values.append(key.get("path", []))
+
+            # Append other properties according to the sorted properties
+            for prop_name in sorted_property_names:
+                prop_v = properties.get(prop_name)
+
+                if prop_v is not None:
+                    prop_value, prop_type = ParseEntity.parse_properties(prop_name, prop_v)
+                    row_values.append(prop_value)
+                    current_field_info = final_fields[prop_name]
+                    if current_field_info[1] is None or current_field_info[1] == "UNKNOWN":
+                        final_fields[prop_name] = (prop_name, prop_type, current_field_info[2], current_field_info[3], current_field_info[4], current_field_info[5], current_field_info[6])
+                else:
+                    row_values.append(None)
+            
+            final_rows.append(tuple(row_values))
+
+        return final_rows, final_fields
 
     @classmethod
     def parse_properties(cls, prop_k: str, prop_v: dict):
