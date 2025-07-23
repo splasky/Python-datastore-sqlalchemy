@@ -491,6 +491,6 @@ class ParseEntity:
             prop_value = prop_v["dictValue"]
             prop_type = _types.STRUCT_FIELD_TYPES
         elif value_type == "entityValue":
-            prop_value = prop_v["entityValue"]["properties"]
+            prop_value = prop_v["entityValue"].get("properties") or {}
             prop_type = _types.STRUCT_FIELD_TYPES
         return prop_value, prop_type
