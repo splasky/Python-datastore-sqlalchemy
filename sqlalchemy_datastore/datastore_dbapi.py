@@ -17,6 +17,7 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
+import base64
 from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
@@ -473,7 +474,7 @@ class ParseEntity:
             prop_value = datetime.fromisoformat(prop_v["timestampValue"])
             prop_type = _types.TIMESTAMP
         elif value_type == "blobValue":
-            prop_value = bytes(prop_v["blobValue"])
+            prop_value = base64.b64decode(prop_v.get("blobValue", b''))
             prop_type = _types.BYTES
         elif value_type == "geoPointValue":
             prop_value = prop_v["geoPointValue"]
