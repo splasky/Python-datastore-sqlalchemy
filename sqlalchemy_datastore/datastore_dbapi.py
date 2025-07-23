@@ -491,7 +491,6 @@ class ParseEntity:
             prop_value = prop_v["dictValue"]
             prop_type = _types.STRUCT_FIELD_TYPES
         elif value_type == "entityValue":
-            # FIXME: not implemented
             prop_value = prop_v["entityValue"]["properties"]
-            raise NotImplementedError("entityValue is not implemented yet")
+            prop_type = _types.STRUCT_FIELD_TYPES
         return prop_value, prop_type
