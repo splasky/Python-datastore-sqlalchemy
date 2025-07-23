@@ -483,7 +483,7 @@ class ParseEntity:
             prop_type = _types.KEY_TYPE
         elif value_type == "arrayValue":
             prop_value = []
-            for entity in prop_v["arrayValue"]["values"]:
+            for entity in prop_v["arrayValue"].get("values", []):
                 e_v, _ = ParseEntity.parse_properties(prop_k, entity)
                 prop_value.append(e_v)
             prop_type = _types.ARRAY
