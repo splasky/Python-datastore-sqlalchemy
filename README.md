@@ -1,11 +1,11 @@
 Dialets for SQLAlchemy
 ========================
-Installation
+How to install
 ```
 pip install sqlalchemy-gcp-datastore
 ```
 SQLAlchemy
-```
+```python
 from sqlalchemy import *
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import *
