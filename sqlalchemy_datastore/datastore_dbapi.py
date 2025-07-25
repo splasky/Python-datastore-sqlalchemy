@@ -455,43 +455,43 @@ class ParseEntity:
         value_type = next(iter(prop_v), None)
         prop_type = None
 
-        if value_type == "nullValue":
+        if value_type == "nullValue" or "nullValue" in prop_v:
             prop_value = None
             prop_type = _types.NONE_TYPES
-        elif value_type == "booleanValue":
+        elif value_type == "booleanValue" or "booleanValue" in prop_v:
             prop_value = bool(prop_v["booleanValue"])
             prop_type = _types.BOOL
-        elif value_type == "integerValue":
+        elif value_type == "integerValue" or "integerValue" in prop_v:
             prop_value = int(prop_v["integerValue"])
             prop_type = _types.INTEGER
-        elif value_type == "doubleValue":
+        elif value_type == "doubleValue" or "doubleValue" in prop_v:
             prop_value = float(prop_v["doubleValue"])
             prop_type = _types.FLOAT64
         elif value_type == "stringValue" or "stringValue" in prop_v:
             prop_value = prop_v["stringValue"]
             prop_type = _types.STRING
-        elif value_type == "timestampValue":
+        elif value_type == "timestampValue" or "timestampValue" in prop_v:
             prop_value = datetime.fromisoformat(prop_v["timestampValue"])
             prop_type = _types.TIMESTAMP
-        elif value_type == "blobValue":
+        elif value_type == "blobValue" or "blobValue" in prop_v:
             prop_value = base64.b64decode(prop_v.get("blobValue", b''))
             prop_type = _types.BYTES
-        elif value_type == "geoPointValue":
+        elif value_type == "geoPointValue" or "geoPointValue" in prop_v:
             prop_value = prop_v["geoPointValue"]
             prop_type = _types.GEOPOINT
-        elif value_type == "keyValue":
+        elif value_type == "keyValue" or "keyValue" in prop_v:
             prop_value = prop_v["keyValue"]["path"]
             prop_type = _types.KEY_TYPE
-        elif value_type == "arrayValue":
+        elif value_type == "arrayValue" or "arrayValue" in prop_v:
             prop_value = []
             for entity in prop_v["arrayValue"].get("values", []):
                 e_v, _ = ParseEntity.parse_properties(prop_k, entity)
                 prop_value.append(e_v)
             prop_type = _types.ARRAY
-        elif value_type == "dictValue":
+        elif value_type == "dictValue" or "dictValue" in prop_v:
             prop_value = prop_v["dictValue"]
             prop_type = _types.STRUCT_FIELD_TYPES
-        elif value_type == "entityValue":
+        elif value_type == "entityValue" or "entityValue" in prop_v:
             prop_value = prop_v["entityValue"].get("properties") or {}
             prop_type = _types.STRUCT_FIELD_TYPES
         return prop_value, prop_type
