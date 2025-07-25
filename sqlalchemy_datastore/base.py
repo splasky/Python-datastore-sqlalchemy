@@ -17,6 +17,7 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
+from typing import Any, List
 
 from . import _types
 from . import datastore_dbapi
@@ -463,3 +464,10 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def do_execute(self, cursor, statement, parameters, context=None):
         """Execute a statement."""
         cursor.execute(statement, parameters)
+    
+    def get_view_names(self, connection: Connection, schema: str | None = None, **kw: Any) -> List[str]:
+        """
+        Datastore doesn't have view, return empty list.
+        """
+        return []
+
