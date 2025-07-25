@@ -29,6 +29,7 @@ from .parse_url import parse_url
 from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
+from sqlalchemy.sql.expression import TextClause
 
 logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
 
@@ -39,15 +40,15 @@ class DatastoreCompiler(compiler.SQLCompiler):
     Translates SQLAlchemy expressions into Datastore queries/operations.
     """
 
-    def __init__(self, dialect, statement, *args, **kwargs):
-        super().__init__(dialect, statement, *args, **kwargs)
+    # def __init__(self, dialect, statement, *args, **kwargs):
+    # super().__init__(dialect, statement, *args, **kwargs)
 
-        if hasattr(statement, "_compile_state_factory"):
-            compiler = dialect.statement_compiler(dialect, statement)
-            self.compile_state = statement._compile_state_factory(statement, compiler)
-            self.compiled.compile_state = self.compile_state
-        else:
-            self.compile_state = None
+    # if hasattr(statement, "_compile_state_factory"):
+    #     compiler = dialect.statement_compiler(dialect, statement)
+    #     self.compile_state = statement._compile_state_factory(statement, compiler)
+    #     self.compiled.compile_state = self.compile_state
+    # else:
+    #     self.compile_state = None
 
     def visit_select(self, select_stmt, asfrom=False, **kw):
         """
@@ -57,11 +58,15 @@ class DatastoreCompiler(compiler.SQLCompiler):
         # A very simplified approach. In a real dialect, this would
         # involve much more complex parsing of WHERE clauses, ORDER BY, LIMIT, etc.
 
+        return str(select_stmt)
         # Get the table/kind name
         if hasattr(select_stmt, "table") and select_stmt.table is not None:
             kind = select_stmt.table.name
         elif hasattr(select_stmt, "froms") and select_stmt.froms:
-            kind = select_stmt.froms[0].name
+            if isinstance(select_stmt.froms[0], TextClause):
+                kind = str(select_stmt.froms[0])
+            else:
+                kind = select_stmt.froms[0].name
         else:
             raise exc.CompileError(
                 "Cannot determine table/kind name from SELECT statement"
