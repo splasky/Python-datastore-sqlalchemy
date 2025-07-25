@@ -17,18 +17,20 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
+import logging
 from typing import Any, List
 from concurrent import futures
 
 from . import _types
 from . import datastore_dbapi
 from ._helpers import create_datastore_client
-from ._types import _get_sqla_column_type
 from .parse_url import parse_url
 
 from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
+
+logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
 
 # Define constants for the dialect
 class DatastoreCompiler(compiler.SQLCompiler):

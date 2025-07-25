@@ -18,6 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
 import base64
+import logging
 from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
@@ -31,6 +32,8 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 
 import collections
+
+logger = logging.getLogger('sqlalchemy.dialects.datastore_dbapi')
 
 apilevel = "2.0"
 threadsafety = 2
