@@ -154,11 +154,11 @@ class Cursor:
 
         if response.status_code == 200:
             data = response.json()
-            print(data)
+            logging.debug(data)
         else:
-            print("Error:", response.status_code, response.text)
+            logging.debug("Error:", response.status_code, response.text)
             raise OperationalError(
-                "Failed to execute statement:{statement}"
+                f"Failed to execute statement:{statement}"
             )
         
         self._query_data = iter([])
@@ -199,7 +199,7 @@ class Cursor:
         if parameters is None:
             parameters = {}
 
-        print(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
+        logging.debug(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
 
         try:
             result = self._execute(operation, **parameters)
@@ -372,7 +372,7 @@ class Cursor:
     def close(self):
         self._closed = True
         self.connection = None
-        print("Cursor is closed.")
+        logging.debug("Cursor is closed.")
 
 
 class Connection:
@@ -384,16 +384,16 @@ class Connection:
         return Cursor(self)
 
     def begin(self):
-        print("datastore connection transaction begin")
+        logging.debug("datastore connection transaction begin")
 
     def commit(self):
-        print("datastore connection commit")
+        logging.debug("datastore connection commit")
 
     def rollback(self):
-        print("datastore connection rollback")
+        logging.debug("datastore connection rollback")
 
     def close(self):
-        print("Closing connection")
+        logging.debug("Closing connection")
 
 
 def connect(client=None):
