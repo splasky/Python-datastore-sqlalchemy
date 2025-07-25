@@ -18,6 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
 from typing import Any, List
+from concurrent import futures
 
 from . import _types
 from . import datastore_dbapi
@@ -435,30 +436,33 @@ class CloudDatastoreDialect(default.DefaultDialect):
         client = self._client
         query = client.query(kind="__kind__")
         kinds = list(query.fetch())
-        result = []
-        for kind in kinds:
-            result.append(kind.key.name)
+
+        def get_kind_name(kind):
+            return kind.key.name
+
+        with futures.ThreadPoolExecutor() as executor:
+            result = list(executor.map(get_kind_name, kinds))
+    
         return result
 
-    def get_columns(connection: Connection, table_name: str, schema: str | None = None, **kw):
-        """Retrieve column information from the database."""
+    def get_columns(self, connection: Connection, table_name: str, schema: str | None = None, **kw):
+        """Retrieve column information from the database with optimized parallel processing."""
         client = self._client
-        query = client.query(kind=table_name)
         ancestor_key = client.key("__kind__", table_name)
         query = client.query(kind="__property__", ancestor=ancestor_key)
         properties = list(query.fetch())
-        columns = []
 
-        for property in properties:
-            columns.append(
-                {
-                    "name": property.key.name,
-                    "type": _types.STRING, # FIXME: Prototype usage, change later
-                    "nullable": True,
-                    "comment": "",
-                    "default": None,
-                }
-            )
+        def process_property(property):
+            return {
+                "name": property.key.name,
+                "type": _types.STRING,  # TODO:Change to other type 
+                "nullable": True,
+                "comment": "",
+                "default": None,
+            }
+
+        with futures.ThreadPoolExecutor() as executor:
+            columns = list(executor.map(process_property, properties))
         return columns
 
     def do_execute(self, cursor, statement, parameters, context=None):
