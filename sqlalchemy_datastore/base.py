@@ -31,6 +31,11 @@ from sqlalchemy import exc
 from sqlalchemy.sql import compiler
 from sqlalchemy.sql.expression import TextClause
 
+from google.cloud import firestore_admin_v1
+from google.cloud.firestore_admin_v1.types import ListDatabasesResponse
+from google.api_core.exceptions import GoogleAPIError
+from google.api_core import client_info
+
 logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
 
 # Define constants for the dialect
@@ -437,7 +442,30 @@ class CloudDatastoreDialect(default.DefaultDialect):
         return ([], {"client": client})
 
     def get_schema_names(self, connection, **kw):
-        return self.get_table_names(connection, None)
+        return self._list_datastore_databases(self.credentials_info, self.project_id)
+
+    def _list_datastore_databases(self, cred: client_info.ClientInfo, project_id: str):
+        """Lists all Datastore databases for a given Google Cloud project.
+        """
+        client = firestore_admin_v1.FirestoreAdminClient(client_info=cred)
+        parent = f"projects/{project_id}"
+
+        try:
+            list_database_resp = client.list_databases(parent=parent)
+            databases_as_dicts = list_database_resp.to_dict().get("databases", [])
+            def get_database_short_name(database_dict):
+                full_name = database_dict.get("name")
+                if full_name:
+                    return full_name.split("/")[-1]
+                return None
+
+            with futures.ThreadPoolExecutor() as executor:
+                schemas = list(executor.map(get_database_short_name, databases_as_dicts))
+        
+            return schemas
+        except Exception as e:
+            logging.error(e)
+        return []
 
     def get_table_names(self, connection, schema: str | None = None, **kw):
         client = self._client
