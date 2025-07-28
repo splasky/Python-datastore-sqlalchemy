@@ -431,23 +431,23 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def get_schema_names(self, connection, **kw):
         return self._list_datastore_databases(self.credentials_info, self.project_id)
 
-    def _list_datastore_databases(self, cred: client_info.ClientInfo, project_id: str):
+    def _list_datastore_databases(self, cred: service_account.Credentials, project_id: str) -> Optional[List[str]]:
         """Lists all Datastore databases for a given Google Cloud project.
         """
-        client = firestore_admin_v1.FirestoreAdminClient(client_info=cred)
+        client = firestore_admin_v1.FirestoreAdminClient(credentials=cred)
         parent = f"projects/{project_id}"
 
         try:
             list_database_resp = client.list_databases(parent=parent)
-            databases_as_dicts = list_database_resp.to_dict().get("databases", [])
-            def get_database_short_name(database_dict):
-                full_name = database_dict.get("name")
+
+            def get_database_short_name(database: Database) -> Optional[List[str]]:
+                full_name = database.name
                 if full_name:
                     return full_name.split("/")[-1]
                 return None
 
             with futures.ThreadPoolExecutor() as executor:
-                schemas = list(executor.map(get_database_short_name, databases_as_dicts))
+                schemas = list(executor.map(get_database_short_name, list_database_resp.databases))
         
             return schemas
         except Exception as e:
