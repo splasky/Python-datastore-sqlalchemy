@@ -18,7 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
 import logging
-from typing import Any, List
+from typing import Any, List, Optional, Dict
 from concurrent import futures
 
 from . import _types
@@ -32,9 +32,8 @@ from sqlalchemy.sql import compiler
 from sqlalchemy.sql.expression import TextClause
 
 from google.cloud import firestore_admin_v1
-from google.cloud.firestore_admin_v1.types import ListDatabasesResponse
-from google.api_core.exceptions import GoogleAPIError
-from google.api_core import client_info
+from google.cloud.firestore_admin_v1.types import ListDatabasesResponse, Database
+from google.oauth2 import service_account
 
 logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
 
@@ -354,6 +353,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.dataset_id = None
         self.list_tables_page_size = list_tables_page_size
         self._client = None
+        self.credentials = None
 
     @classmethod
     def dbapi(cls):
@@ -363,7 +363,8 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def do_ping(self, dbapi_connection):
         """Performs a simple operation to check if the connection is still alive."""
         try:
-            # Basic connectivity check
+            query = self._client.query(kind="__kind__")
+            query.fetch(limit=1, timeout=30)
             return True
         except Exception:
             return False
@@ -406,11 +407,12 @@ class CloudDatastoreDialect(default.DefaultDialect):
         if user_supplied_client:
             return ([], {})
         else:
-            client = create_datastore_client(
+            client, credentials = create_datastore_client(
                 credentials_path=self.credentials_path,
                 credentials_info=self.credentials_info,
                 credentials_base64=self.credentials_base64,
                 project_id=self.billing_project_id,
+                database=None,
             )
             self.project_id = self.project_id if self.project_id else client.project
             self.billing_project_id = (
@@ -423,13 +425,14 @@ class CloudDatastoreDialect(default.DefaultDialect):
             )
 
         self._client = client
+        self.credentials = credentials
         setattr(self._client, "credentials_path", self.credentials_path)
         setattr(self._client, "credentials_info", self.credentials_info)
         setattr(self._client, "credentials_base64", self.credentials_base64)
         return ([], {"client": client})
 
-    def get_schema_names(self, connection, **kw):
-        return self._list_datastore_databases(self.credentials_info, self.project_id)
+    def get_schema_names(self, connection: Connection, **kw) -> Optional[List[str]]:
+        return self._list_datastore_databases(self.credentials, self.project_id)
 
     def _list_datastore_databases(self, cred: service_account.Credentials, project_id: str) -> Optional[List[str]]:
         """Lists all Datastore databases for a given Google Cloud project.
@@ -454,8 +457,13 @@ class CloudDatastoreDialect(default.DefaultDialect):
             logging.error(e)
         return []
 
-    def get_table_names(self, connection, schema: str | None = None, **kw):
-        client = self._client
+    def get_table_names(self, connection: Connection, schema: str | None = None, **kw) -> Optional[List[str]]:
+        client, _ = create_datastore_client(
+            credentials_path=self.credentials_path,
+            credentials_info=self.credentials_info,
+            credentials_base64=self.credentials_base64,
+            database=schema
+        )
         query = client.query(kind="__kind__")
         kinds = list(query.fetch())
 
@@ -469,7 +477,12 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
     def get_columns(self, connection: Connection, table_name: str, schema: str | None = None, **kw):
         """Retrieve column information from the database with optimized parallel processing."""
-        client = self._client
+        client, _ = create_datastore_client(
+            credentials_path=self.credentials_path,
+            credentials_info=self.credentials_info,
+            credentials_base64=self.credentials_base64,
+            database=schema
+        )
         ancestor_key = client.key("__kind__", table_name)
         query = client.query(kind="__property__", ancestor=ancestor_key)
         properties = list(query.fetch())

@@ -20,7 +20,7 @@
 import functools
 import re
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 from google.api_core import client_info
 import google.auth
@@ -58,7 +58,8 @@ def create_datastore_client(
     credentials_base64: Optional[str] = None,
     project_id: Optional[str] = None,
     user_agent: Optional[client_info.ClientInfo] = None,
-) -> datastore.Client:
+    database: Optional[str] = None
+) -> Tuple[datastore.Client, service_account.Credentials]:
     """Construct a BigQuery client object.
 
     Args:
@@ -77,7 +78,7 @@ def create_datastore_client(
     """
 
     default_project = None
-
+    database = database if database != "(default)" else None
     if os.getenv("DATASTORE_EMULATOR_HOST") is not None:
         client = datastore.Client(project=project_id)
         return client
@@ -109,7 +110,8 @@ def create_datastore_client(
         client_info=info,
         project=project_id,
         credentials=credentials,
-    )
+        database=database
+    ), credentials
 
 
 def substitute_re_method(r, flags=0, repl=None):
