@@ -41,7 +41,7 @@ _type_map = {
     "TIMESTAMP": sqlalchemy.types.TIMESTAMP,
     "TIME": sqlalchemy.types.TIME,
     "GEOGRAPHY": sqlalchemy.types.ARRAY,
-    "NONE": sqlalchemy.types.NullType,
+    "NULL": sqlalchemy.types.NullType,
     "KEY": sqlalchemy.types.JSON
 }
 
@@ -65,8 +65,21 @@ TIME = _type_map["TIME"]
 GEOPOINT = _type_map["GEOGRAPHY"]
 STRUCT_FIELD_TYPES = _type_map["STRUCT"] 
 RECORD_FIELD_TYPES = _type_map["RECORD"] 
-NONE_TYPES = _type_map["NONE"]
+NULL_TYPE = _type_map["NULL"]
 KEY_TYPE = _type_map["KEY"]
+
+_property_type = {
+    "Date/Time": DATETIME,
+    "GeoPt": GEOPOINT,
+    "Integer": INTEGER,
+    "Key": KEY_TYPE,
+    "Blob": BYTES,
+    "Boolean": BOOLEAN,
+    "EmbeddedEntity": STRUCT_FIELD_TYPES,
+    "Float": FLOAT,
+    "NULL": NULL_TYPE,
+    "String": STRING
+}
 
 
 def _get_transitive_schema_fields(fields):

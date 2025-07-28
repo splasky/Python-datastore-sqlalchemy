@@ -16,7 +16,6 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-import os
 import logging
 from typing import Any, List, Optional, Dict
 from concurrent import futures
@@ -32,7 +31,7 @@ from sqlalchemy.sql import compiler
 from sqlalchemy.sql.expression import TextClause
 
 from google.cloud import firestore_admin_v1
-from google.cloud.firestore_admin_v1.types import ListDatabasesResponse, Database
+from google.cloud.firestore_admin_v1.types import Database
 from google.oauth2 import service_account
 
 logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
@@ -483,14 +482,14 @@ class CloudDatastoreDialect(default.DefaultDialect):
             credentials_base64=self.credentials_base64,
             database=schema
         )
-        ancestor_key = client.key("__kind__", table_name)
-        query = client.query(kind="__property__", ancestor=ancestor_key)
+        query = client.query(kind="__Stat_PropertyType_PropertyName_Kind__")
+        query.add_filter("kind_name", "=", table_name)
         properties = list(query.fetch())
 
         def process_property(property):
             return {
-                "name": property.key.name,
-                "type": _types.STRING,  # TODO:Change to other type 
+                "name": property["property_name"],
+                "type": _types._property_type[property["property_type"]],
                 "nullable": True,
                 "comment": "",
                 "default": None,
