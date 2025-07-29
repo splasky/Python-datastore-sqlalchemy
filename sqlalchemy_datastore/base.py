@@ -467,12 +467,12 @@ class CloudDatastoreDialect(default.DefaultDialect):
         kinds = list(query.fetch())
 
         def get_kind_name(kind):
-            return kind.key.name
+            return name if (name := getattr(getattr(kind, 'key', None), 'name', None)) is not None and isinstance(name, str) and not name.startswith("__") else None
 
         with futures.ThreadPoolExecutor() as executor:
             result = list(executor.map(get_kind_name, kinds))
     
-        return result
+        return [t for t in result if t is not None] 
 
     def get_columns(self, connection: Connection, table_name: str, schema: str | None = None, **kw):
         """Retrieve column information from the database with optimized parallel processing."""
