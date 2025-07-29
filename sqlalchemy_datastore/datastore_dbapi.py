@@ -460,7 +460,7 @@ class ParseEntity:
 
         if value_type == "nullValue" or "nullValue" in prop_v:
             prop_value = None
-            prop_type = _types.NONE_TYPES
+            prop_type = _types.NULL_TYPE
         elif value_type == "booleanValue" or "booleanValue" in prop_v:
             prop_value = bool(prop_v["booleanValue"])
             prop_type = _types.BOOL
