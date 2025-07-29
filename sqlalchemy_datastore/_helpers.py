@@ -81,7 +81,7 @@ def create_datastore_client(
     database = database if database != "(default)" else None
     if os.getenv("DATASTORE_EMULATOR_HOST") is not None:
         client = datastore.Client(project=project_id)
-        return client
+        return client, None
 
     if credentials_base64:
         credentials_info = json.loads(base64.b64decode(credentials_base64))
