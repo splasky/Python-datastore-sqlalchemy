@@ -133,6 +133,34 @@ def test_aggregate_count_up_to(conn):
     assert len(data) == 3
 
 
+ 
+def test_derived_table_query_count_distinct(conn):
+    result = conn.execute(
+        text('SELECT task AS task, count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" FROM (SELECT * from users) AS virtual_table GROUP BY description ORDER BY "COUNT_DISTINCT(rewards)" DESC LIMIT 10')
+    )
+    data = result.fetchall()
+    assert len(data) == 3
+
+def test_derived_table_query_as_virtual_table(conn):
+    result = conn.execute(
+        text(
+            """
+            SELECT
+                name AS name,
+                age AS age,
+                country AS country,
+                create_time AS create_time,
+                description AS description
+            FROM (
+                SELECT * FROM users
+                ) AS virtual_table
+            LIMIT 10
+            """
+        )
+    )
+    data = result.fetchall()
+    assert len(data) == 3
+
 @pytest.mark.skip
 def test_insert_data(conn):
     result = conn.execute(text("INSERT INTO users (name, age) VALUES ('Virginia Robertson', 25)"))
