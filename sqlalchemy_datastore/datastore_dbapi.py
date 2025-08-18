@@ -26,7 +26,6 @@ from datetime import datetime
 from typing import Optional, Any, List, Tuple 
 from . import _types
 import requests
-from datetime import datetime
 from requests import Response
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
@@ -195,14 +194,14 @@ class Cursor:
             self.rowcount = affected_count
             self._closed = True
 
-    def execute_orm(self, operation: Optional[dict], parameters=None):
+    def execute_orm(self, statements: Optional[dict], parameters=None):
         if parameters is None:
             parameters = {}
 
-        logging.debug(f"[DataStore DBAPI] Executing: {operation} with parameters: {parameters}")
+        logging.debug(f"[DataStore DBAPI] Executing: {statements} with parameters: {parameters}")
 
         try:
-            result = self._execute(operation, **parameters)
+            result = self._execute(statements, **parameters)
 
             if isinstance(result, tuple) and len(result) == 2:
                 # Case: query operation returns (rows, schema)
