@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -17,7 +17,8 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import logging
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional
+import json
 from concurrent import futures
 
 from . import _types
@@ -29,12 +30,19 @@ from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import compiler
 from sqlalchemy.sql.expression import TextClause
+from sqlalchemy.sql import Select
+from sqlalchemy.engine.interfaces import (
+    DBAPICursor,
+    _DBAPISingleExecuteParams,
+    ExecutionContext,
+)
 
 from google.cloud import firestore_admin_v1
 from google.cloud.firestore_admin_v1.types import Database
 from google.oauth2 import service_account
 
-logger = logging.getLogger('sqlalchemy.dialects.CloudDatastore')
+logger = logging.getLogger("sqlalchemy.dialects.CloudDatastore")
+
 
 # Define constants for the dialect
 class DatastoreCompiler(compiler.SQLCompiler):
@@ -43,25 +51,49 @@ class DatastoreCompiler(compiler.SQLCompiler):
     Translates SQLAlchemy expressions into Datastore queries/operations.
     """
 
-    # def __init__(self, dialect, statement, *args, **kwargs):
-    # super().__init__(dialect, statement, *args, **kwargs)
+    def _contains_select_subquery(self, node) -> bool:
+        """
+        Check the AST node contains select subquery
+        """
+        if isinstance(node, Select):
+            for child in node.get_children():
+                if isinstance(child, Select) or self._contains_select_subquery(child):
+                    return True
 
-    # if hasattr(statement, "_compile_state_factory"):
-    #     compiler = dialect.statement_compiler(dialect, statement)
-    #     self.compile_state = statement._compile_state_factory(statement, compiler)
-    #     self.compiled.compile_state = self.compile_state
-    # else:
-    #     self.compile_state = None
+        for child in node.get_children():
+            if isinstance(child, Select) or self._contains_select_subquery(child):
+                return True
+
+        return False
 
     def visit_select(self, select_stmt, asfrom=False, **kw):
-        """
-        Handles SELECT statements.
-        Datastore doesn't use SQL, so this translates to Datastore query objects.
-        """
-        # A very simplified approach. In a real dialect, this would
-        # involve much more complex parsing of WHERE clauses, ORDER BY, LIMIT, etc.
 
-        return str(select_stmt)
+        if self._contains_select_subquery(select_stmt):
+            # derived query
+            return self._datastore_query(select_stmt)
+
+        # simple GQL query
+        return self._simple_gql_query(select_stmt)
+
+    def _simple_gql_query(self, select_stmt):
+        """
+        GQL query
+        """
+        # Simple GQL query
+        logging.debug("[GQL query] %s", str(select_stmt))
+        return json.dumps(
+            {
+                "type": "gql_query",
+                "kind": select_stmt.table.name,
+                "statement": str(select_stmt),
+            }
+        )
+
+    def _datastore_query(self, select_stmt):
+        """
+        Datastore query
+        """
+        logging.debug("[Datastore query] %s", str(select_stmt))
         # Get the table/kind name
         if hasattr(select_stmt, "table") and select_stmt.table is not None:
             kind = select_stmt.table.name
@@ -90,7 +122,7 @@ class DatastoreCompiler(compiler.SQLCompiler):
             "order_by": [],
             "limit": getattr(select_stmt, "_limit_clause", None),
             "offset": getattr(select_stmt, "_offset_clause", None),
-            "type": "query",
+            "type": "datastore_query",
         }
 
         # Parse WHERE clause
@@ -108,7 +140,7 @@ class DatastoreCompiler(compiler.SQLCompiler):
                 order_list.append((column_name, direction))
             query["order_by"] = order_list
 
-        return query
+        return json.dumps(query)
 
     def _extract_pk_value(self, where_clause, pk_column_name):
         """Extract primary key value from WHERE clause for direct lookup"""
@@ -151,155 +183,6 @@ class DatastoreCompiler(compiler.SQLCompiler):
 
         return filters
 
-    def visit_insert(self, insert_stmt, **kw):
-        """Handles INSERT statements."""
-        table = insert_stmt.table
-        kind = table.name
-
-        # Get parameters from the insert statement
-        if hasattr(insert_stmt, "parameters") and insert_stmt.parameters:
-            parameters = (
-                insert_stmt.parameters[0]
-                if isinstance(insert_stmt.parameters, list)
-                else insert_stmt.parameters
-            )
-        else:
-            parameters = {}
-
-        # Datastore keys require a path. If primary key is provided, use it as ID.
-        key_name = None
-        for col in table.columns:
-            if col.primary_key and col.name in parameters:
-                key_name = parameters[col.name]
-                break
-
-        return {
-            "kind": kind,
-            "data": parameters,
-            "key_name": key_name,
-            "type": "insert",
-        }
-
-    def visit_update(self, update_stmt, **kw):
-        """Handles UPDATE statements."""
-        table = update_stmt.table
-        kind = table.name
-
-        # Get parameters
-        if hasattr(update_stmt, "parameters") and update_stmt.parameters:
-            parameters = (
-                update_stmt.parameters[0]
-                if isinstance(update_stmt.parameters, list)
-                else update_stmt.parameters
-            )
-        else:
-            parameters = {}
-
-        # Extract primary key from WHERE clause
-        key_name = None
-        pk_column = None
-        for col in table.columns:
-            if col.primary_key:
-                pk_column = col
-                break
-
-        if (
-            pk_column
-            and hasattr(update_stmt, "whereclause")
-            and update_stmt.whereclause is not None
-        ):
-            key_name = self._extract_pk_value(update_stmt.whereclause, pk_column.name)
-
-        if key_name is None:
-            raise exc.CompileError(
-                "UPDATE statement requires a primary key in WHERE clause for Datastore."
-            )
-
-        # Exclude the primary key from data to update if it's there
-        data_to_update = {k: v for k, v in parameters.items() if k != pk_column.name}
-
-        return {"kind": kind, "id": key_name, "data": data_to_update, "type": "update"}
-
-    def visit_delete(self, delete_stmt, **kw):
-        """Handles DELETE statements."""
-        table = delete_stmt.table
-        kind = table.name
-
-        key_name = None
-        pk_column = None
-        for col in table.columns:
-            if col.primary_key:
-                pk_column = col
-                break
-
-        if (
-            pk_column
-            and hasattr(delete_stmt, "whereclause")
-            and delete_stmt.whereclause is not None
-        ):
-            key_name = self._extract_pk_value(delete_stmt.whereclause, pk_column.name)
-
-        if key_name is None:
-            raise exc.CompileError(
-                "DELETE statement requires a primary key in WHERE clause for Datastore."
-            )
-
-        return {"kind": kind, "id": key_name, "type": "delete"}
-
-    def visit_drop_table(self, drop, **kw):
-        """Handles DROP TABLE statements."""
-        return {"kind": drop.element.name, "type": "drop_kind"}
-
-    def visit_create_table(self, create, **kw):
-        """Handles CREATE TABLE statements."""
-        return {"kind": create.element.name, "type": "create_kind"}
-
-
-class DatastoreTypeCompiler(compiler.GenericTypeCompiler):
-    """Type compiler for Datastore, mapping SQLAlchemy types to Datastore's implicit types."""
-
-    def visit_INTEGER(self, type_, **kw):
-        return None
-
-    def visit_SMALLINT(self, type_, **kw):
-        return None
-
-    def visit_BIGINT(self, type_, **kw):
-        return None
-
-    def visit_BOOLEAN(self, type_, **kw):
-        return None
-
-    def visit_FLOAT(self, type_, **kw):
-        return None
-
-    def visit_NUMERIC(self, type_, **kw):
-        return None
-
-    def visit_DATETIME(self, type_, **kw):
-        return None
-
-    def visit_TIMESTAMP(self, type_, **kw):
-        return None
-
-    def visit_DATE(self, type_, **kw):
-        return None
-
-    def visit_TIME(self, type_, **kw):
-        return None
-
-    def visit_VARCHAR(self, type_, **kw):
-        return None
-
-    def visit_TEXT(self, type_, **kw):
-        return None
-
-    def visit_BLOB(self, type_, **kw):
-        return None
-
-    def visit_JSON(self, type_, **kw):
-        return None
-
 
 class CloudDatastoreDialect(default.DefaultDialect):
     """SQLAlchemy dialect for Google Cloud Datastore."""
@@ -307,9 +190,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     name = "datastore"
     driver = "datastore"
 
-    # Specify the compiler classes
     statement_compiler = DatastoreCompiler
-    type_compiler_cls = DatastoreTypeCompiler
 
     # Datastore capabilities
     supports_alter = False
@@ -430,12 +311,13 @@ class CloudDatastoreDialect(default.DefaultDialect):
         setattr(self._client, "credentials_base64", self.credentials_base64)
         return ([], {"client": client})
 
-    def get_schema_names(self, connection: Connection, **kw) -> Optional[List[str]]:
+    def get_schema_names(self, connection: Connection, **kw) -> List[str]:
         return self._list_datastore_databases(self.credentials, self.project_id)
 
-    def _list_datastore_databases(self, cred: service_account.Credentials, project_id: str) -> Optional[List[str]]:
-        """Lists all Datastore databases for a given Google Cloud project.
-        """
+    def _list_datastore_databases(
+        self, cred: service_account.Credentials, project_id: str
+    ) -> List[str]:
+        """Lists all Datastore databases for a given Google Cloud project."""
         client = firestore_admin_v1.FirestoreAdminClient(credentials=cred)
         parent = f"projects/{project_id}"
 
@@ -449,39 +331,42 @@ class CloudDatastoreDialect(default.DefaultDialect):
                 return None
 
             with futures.ThreadPoolExecutor() as executor:
-                schemas = list(executor.map(get_database_short_name, list_database_resp.databases))
-        
+                schemas = list(
+                    executor.map(get_database_short_name, list_database_resp.databases)
+                )
+
             return schemas
         except Exception as e:
             logging.error(e)
         return []
 
-    def get_table_names(self, connection: Connection, schema: str | None = None, **kw) -> Optional[List[str]]:
-        client, _ = create_datastore_client(
-            credentials_path=self.credentials_path,
-            credentials_info=self.credentials_info,
-            credentials_base64=self.credentials_base64,
-            database=schema
-        )
+    def get_table_names(
+        self, connection: Connection, schema: str | None = None, **kw
+    ) -> List[str]:
+        client = self._client
         query = client.query(kind="__kind__")
         kinds = list(query.fetch())
 
         def get_kind_name(kind):
-            return name if (name := getattr(getattr(kind, 'key', None), 'name', None)) is not None and isinstance(name, str) and not name.startswith("__") else None
+            return (
+                name
+                if (name := getattr(getattr(kind, "key", None), "name", None))
+                is not None
+                and isinstance(name, str)
+                and not name.startswith("__")
+                else None
+            )
 
         with futures.ThreadPoolExecutor() as executor:
             result = list(executor.map(get_kind_name, kinds))
-    
-        return [t for t in result if t is not None] 
 
-    def get_columns(self, connection: Connection, table_name: str, schema: str | None = None, **kw):
+        return [t for t in result if t is not None]
+
+    def get_columns(
+        self, connection: Connection, table_name: str, schema: str | None = None, **kw
+    ):
         """Retrieve column information from the database with optimized parallel processing."""
-        client, _ = create_datastore_client(
-            credentials_path=self.credentials_path,
-            credentials_info=self.credentials_info,
-            credentials_base64=self.credentials_base64,
-            database=schema
-        )
+        client = self._client
         query = client.query(kind="__Stat_PropertyType_PropertyName_Kind__")
         query.add_filter("kind_name", "=", table_name)
         properties = list(query.fetch())
@@ -499,13 +384,42 @@ class CloudDatastoreDialect(default.DefaultDialect):
             columns = list(executor.map(process_property, properties))
         return columns
 
-    def do_execute(self, cursor, statement, parameters, context=None):
-        """Execute a statement."""
-        cursor.execute(statement, parameters)
-    
-    def get_view_names(self, connection: Connection, schema: str | None = None, **kw: Any) -> List[str]:
+    def do_execute(
+        self,
+        cursor: DBAPICursor,
+        statement: str,
+        parameters: Optional[_DBAPISingleExecuteParams],
+        context: Optional[ExecutionContext] = None,
+    ) -> None:
+
+        ds_statement = json.loads(statement)
+        match ds_statement.get("type", ""):
+            case "gql_query":
+                cursor.gql_query(ds_statement["statement"])
+            case "datastore_query":
+                cursor.execute_orm(ds_statement["statement"])
+            case _:
+                raise NotImplementedError(
+                    f"Cannot execute: {ds_statement["statement"]}"
+                )
+
+    def get_view_names(
+        self, connection: Connection, schema: str | None = None, **kw: Any
+    ) -> List[str]:
         """
         Datastore doesn't have view, return empty list.
         """
         return []
 
+    def has_table(
+        self,
+        connection: Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw: Any,
+    ) -> bool:
+        try:
+            return table_name in self.get_table_names(connection, schema)
+        except Exception as e:
+            logging.debug(e)
+            return False

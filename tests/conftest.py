@@ -251,6 +251,7 @@ def test_datasets(datastore_client):
 
 @pytest.fixture(scope="session")
 def engine():
+    os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
     engine = create_engine(f"datastore://{TEST_PROJECT}", echo=True)
     Base.metadata.create_all(engine)  # Create tables (kinds)
     return engine
