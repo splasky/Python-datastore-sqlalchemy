@@ -41,3 +41,7 @@ indexes:
   - name: equipment
   - name: encrypted_formula
   - name: additional_notes
+- kind: tasks 
+  properties: 
+  - name: is_done 
+  - name: reward
