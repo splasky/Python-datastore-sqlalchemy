@@ -1,4 +1,5 @@
 sqlalchemy>=1.4.54,<2.1.0
+sqlparse==0.5.3
 google-cloud-datastore>=2.21.0
 google-cloud-bigquery>=3.35.0
 google-cloud-firestore == 2.21.0

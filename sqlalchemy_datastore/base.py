@@ -51,23 +51,20 @@ class DatastoreCompiler(compiler.SQLCompiler):
     Translates SQLAlchemy expressions into Datastore queries/operations.
     """
 
-    def _contains_select_subquery(self, node) -> bool:
-        """
-        Check the AST node contains select subquery
-        """
-        if isinstance(node, Select):
-            for child in node.get_children():
-                if isinstance(child, Select) or self._contains_select_subquery(child):
-                    return True
+   
 
-        for child in node.get_children():
-            if isinstance(child, Select) or self._contains_select_subquery(child):
-                return True
-
-        return False
-
-    def visit_select(self, select_stmt, asfrom=False, **kw):
-
+    def visit_select(
+        self,
+        select_stmt,
+        asfrom=False,
+        insert_into=False,
+        fromhints=None,
+        compound_index=None,
+        select_wraps_for=None,
+        lateral=False,
+        from_linter=None,
+        **kwargs,
+    ):
         if self._contains_select_subquery(select_stmt):
             # derived query
             return self._datastore_query(select_stmt)
@@ -383,6 +380,21 @@ class CloudDatastoreDialect(default.DefaultDialect):
         with futures.ThreadPoolExecutor() as executor:
             columns = list(executor.map(process_property, properties))
         return columns
+
+    def _contains_select_subquery(self, node) -> bool:
+        """
+        Check the AST node contains select subquery
+        """
+        if isinstance(node, Select):
+            for child in node.get_children():
+                if isinstance(child, Select) or self._contains_select_subquery(child):
+                    return True
+
+        for child in node.get_children():
+            if isinstance(child, Select) or self._contains_select_subquery(child):
+                return True
+
+        return False
 
     def do_execute(
         self,

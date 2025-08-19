@@ -23,7 +23,7 @@ from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
 from datetime import datetime
-from typing import Optional, Any, List, Tuple 
+from typing import Any, List, Tuple 
 from . import _types
 import requests
 from requests import Response
@@ -194,7 +194,7 @@ class Cursor:
             self.rowcount = affected_count
             self._closed = True
 
-    def execute_orm(self, statements: Optional[dict], parameters=None):
+    def execute_orm(self, statements: dict, parameters=None):
         if parameters is None:
             parameters = {}
 
