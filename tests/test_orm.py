@@ -37,13 +37,13 @@ def test_user_crud(session):
     # Create
     user = User(
         name=user_info["name"],
-        age=user_info["age"], # or 16
+        age=user_info["age"],
         country=user_info["country"],
         create_time=user_info["create_time"],
         description=user_info["description"],
         settings={
             "team": user_info["settings"]["settings"],
-            "grade": user_info["settings"]["grade"], # 10th grade
+            "grade": user_info["settings"]["grade"],
             "birthday": user_info["settings"]["birthday"],
             "school": user_info["settings"]["school"],
         },
