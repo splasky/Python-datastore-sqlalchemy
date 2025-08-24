@@ -28,8 +28,6 @@ from .parse_url import parse_url
 
 from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
-from sqlalchemy.sql import compiler
-from sqlalchemy.sql.expression import TextClause
 from sqlalchemy.sql import Select
 from sqlalchemy.engine.interfaces import (
     DBAPICursor,
@@ -40,145 +38,9 @@ from sqlalchemy.engine.interfaces import (
 from google.cloud import firestore_admin_v1
 from google.cloud.firestore_admin_v1.types import Database
 from google.oauth2 import service_account
+import sqlparse
 
 logger = logging.getLogger("sqlalchemy.dialects.CloudDatastore")
-
-
-# Define constants for the dialect
-class DatastoreCompiler(compiler.SQLCompiler):
-    """
-    Custom SQLCompiler for Google Cloud Datastore.
-    Translates SQLAlchemy expressions into Datastore queries/operations.
-    """
-
-   
-
-    def visit_select(
-        self,
-        select_stmt,
-        asfrom=False,
-        insert_into=False,
-        fromhints=None,
-        compound_index=None,
-        select_wraps_for=None,
-        lateral=False,
-        from_linter=None,
-        **kwargs,
-    ):
-        if self._contains_select_subquery(select_stmt):
-            # derived query
-            return self._datastore_query(select_stmt)
-
-        # simple GQL query
-        return self._simple_gql_query(select_stmt)
-
-    def _simple_gql_query(self, select_stmt):
-        """
-        GQL query
-        """
-        # Simple GQL query
-        logging.debug("[GQL query] %s", str(select_stmt))
-        return json.dumps(
-            {
-                "type": "gql_query",
-                "kind": select_stmt.table.name,
-                "statement": str(select_stmt),
-            }
-        )
-
-    def _datastore_query(self, select_stmt):
-        """
-        Datastore query
-        """
-        logging.debug("[Datastore query] %s", str(select_stmt))
-        # Get the table/kind name
-        if hasattr(select_stmt, "table") and select_stmt.table is not None:
-            kind = select_stmt.table.name
-        elif hasattr(select_stmt, "froms") and select_stmt.froms:
-            if isinstance(select_stmt.froms[0], TextClause):
-                kind = str(select_stmt.froms[0])
-            else:
-                kind = select_stmt.froms[0].name
-        else:
-            raise exc.CompileError(
-                "Cannot determine table/kind name from SELECT statement"
-            )
-
-        # Check for primary key lookup
-        where_clause = getattr(select_stmt, "whereclause", None)
-        if where_clause is not None:
-            # Try to extract primary key value for direct lookup
-            pk_value = self._extract_pk_value(where_clause, "id")
-            if pk_value is not None:
-                return {"kind": kind, "id": pk_value, "type": "lookup"}
-
-        # Build a basic query object for Datastore
-        query = {
-            "kind": kind,
-            "filters": [],
-            "order_by": [],
-            "limit": getattr(select_stmt, "_limit_clause", None),
-            "offset": getattr(select_stmt, "_offset_clause", None),
-            "type": "datastore_query",
-        }
-
-        # Parse WHERE clause
-        if where_clause is not None:
-            filters = self._parse_where_clause(where_clause)
-            query["filters"] = filters
-
-        # Parse ORDER BY clause
-        order_by = getattr(select_stmt, "_order_by_clause", None)
-        if order_by is not None:
-            order_list = []
-            for order in order_by.clauses:
-                column_name = order.element.name
-                direction = "ASCENDING" if order.is_ascending else "DESCENDING"
-                order_list.append((column_name, direction))
-            query["order_by"] = order_list
-
-        return json.dumps(query)
-
-    def _extract_pk_value(self, where_clause, pk_column_name):
-        """Extract primary key value from WHERE clause for direct lookup"""
-        # This is a simplified implementation
-        # In a real dialect, you'd need to traverse the expression tree more carefully
-        if hasattr(where_clause, "left") and hasattr(where_clause, "right"):
-            if (
-                hasattr(where_clause.left, "name")
-                and where_clause.left.name == pk_column_name
-                and hasattr(where_clause, "operator")
-                and where_clause.operator.__name__ == "eq"
-            ):
-                if hasattr(where_clause.right, "value"):
-                    return where_clause.right.value
-                else:
-                    return where_clause.right
-        return None
-
-    def _parse_where_clause(self, where_clause):
-        """Parse WHERE clause into Datastore filters"""
-        filters = []
-
-        if hasattr(where_clause, "left") and hasattr(where_clause, "right"):
-            col_name = getattr(where_clause.left, "name", None)
-            if col_name and hasattr(where_clause, "operator"):
-                op = where_clause.operator.__name__
-                value = getattr(where_clause.right, "value", where_clause.right)
-
-                # Map SQLAlchemy operators to Datastore filter operators
-                datastore_op_map = {
-                    "eq": "=",
-                    "ne": "!=",
-                    "gt": ">",
-                    "ge": ">=",
-                    "lt": "<",
-                    "le": "<=",
-                }
-                if op in datastore_op_map:
-                    filters.append((col_name, datastore_op_map[op], value))
-
-        return filters
 
 
 class CloudDatastoreDialect(default.DefaultDialect):
@@ -186,8 +48,6 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
     name = "datastore"
     driver = "datastore"
-
-    statement_compiler = DatastoreCompiler
 
     # Datastore capabilities
     supports_alter = False
@@ -403,17 +263,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         parameters: Optional[_DBAPISingleExecuteParams],
         context: Optional[ExecutionContext] = None,
     ) -> None:
-
-        ds_statement = json.loads(statement)
-        match ds_statement.get("type", ""):
-            case "gql_query":
-                cursor.gql_query(ds_statement["statement"])
-            case "datastore_query":
-                cursor.execute_orm(ds_statement["statement"])
-            case _:
-                raise NotImplementedError(
-                    f"Cannot execute: {ds_statement["statement"]}"
-                )
+        cursor.execute(statement)
 
     def get_view_names(
         self, connection: Connection, schema: str | None = None, **kw: Any

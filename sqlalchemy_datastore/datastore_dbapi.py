@@ -19,6 +19,7 @@
 import os
 import base64
 import logging
+import collections
 from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
@@ -29,8 +30,7 @@ import requests
 from requests import Response
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
-
-import collections
+import sqlparse
 
 logger = logging.getLogger('sqlalchemy.dialects.datastore_dbapi')
 
@@ -119,7 +119,20 @@ class Cursor:
         """Execute a Datastore operation."""
         if self._closed:
             raise Error("Cursor is closed.")
-        self.gql_query(statements, parameters)
+        
+        parsed = sqlparse.parse(statements)
+        tokens = [token for token in parsed[0].tokens if not token.is_whitespace]
+        tokens = [token for token in tokens if not token.is_newline]
+        select_counts = 0
+        for token in tokens:
+            if token.ttype is sqlparse.tokens.DML and token.value.upper() == "SELECT":
+                select_counts += 1
+            if token.is_group and 
+                self.execute_orm(statements, parameters)
+        if select_counts > 1:
+            self.execute_orm(statements, parameters)
+        else:
+            self.gql_query(statements, parameters)
 
     def gql_query(self, statement, parameters=None, **kwargs):
         """Only execute raw SQL statements."""

@@ -136,7 +136,13 @@ def test_aggregate_count_up_to(conn):
  
 def test_derived_table_query_count_distinct(conn):
     result = conn.execute(
-        text('SELECT task AS task, count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" FROM (SELECT * from users) AS virtual_table GROUP BY description ORDER BY "COUNT_DISTINCT(rewards)" DESC LIMIT 10')
+        text('SELECT ' \
+        'task AS task, ' \
+        'count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" ' \
+        'FROM (SELECT * from tasks) AS virtual_table ' \
+        'GROUP BY description ' \
+        'ORDER BY "COUNT_DISTINCT(rewards)" ' \
+        'DESC LIMIT 10')
     )
     data = result.fetchall()
     assert len(data) == 3
