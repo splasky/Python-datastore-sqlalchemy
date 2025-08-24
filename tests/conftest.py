@@ -20,6 +20,7 @@ import pytest
 import os
 import signal
 import subprocess
+import shutil
 import requests
 import time
 import logging
@@ -53,6 +54,15 @@ def datastore_client():
     This is a session-scoped fixture, so it will only be run once.
     separate from the development config, open data simulator at port from DATASTORE_EMULATOR_HOST.
     """
+
+    # Allow overriding gcloud path via GCLOUD_PATH, otherwise fall back to PATH lookup.
+    gcloud_path = os.environ.get("GCLOUD_PATH", None)
+    if not gcloud_path:
+        gcloud_path = shutil.which("gcloud")
+
+    if not gcloud_path:
+        pytest.skip("gcloud not found in PATH (or GCLOUD_PATH not set); skipping datastore emulator tests.")
+
     # Start the emulator.
     os.environ["DATASTORE_EMULATOR_HOST"] = "localhost:8081"
     result = subprocess.Popen(
