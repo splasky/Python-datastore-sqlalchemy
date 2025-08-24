@@ -27,7 +27,7 @@ class Task(Base):
     content = Column(JSON)
     is_done = Column(Boolean)
     tag = Column(String)
-    location = Column(ARRAY)
+    location = Column(ARRAY(FLOAT))
     assign_user = Column(JSON)
     reward = Column(FLOAT)
     equipment = Column(JSON)
