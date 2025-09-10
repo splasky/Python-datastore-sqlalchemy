@@ -120,19 +120,30 @@ class Cursor:
         if self._closed:
             raise Error("Cursor is closed.")
         
-        parsed = sqlparse.parse(statements)
-        tokens = [token for token in parsed[0].tokens if not token.is_whitespace]
-        tokens = [token for token in tokens if not token.is_newline]
-        select_counts = 0
-        for token in tokens:
-            if token.ttype is sqlparse.tokens.DML and token.value.upper() == "SELECT":
-                select_counts += 1
-            if token.is_group and 
-                self.execute_orm(statements, parameters)
-        if select_counts > 1:
+        if self._is_derived_query(statements):
             self.execute_orm(statements, parameters)
         else:
             self.gql_query(statements, parameters)
+
+    def _is_derived_query(self, statement: str) -> bool:
+        """
+        Checks if the SQL statement contains a derived table (subquery in FROM).
+        This is a more reliable way to distinguish complex ORM queries from simple GQL.
+        """
+        parsed = sqlparse.parse(statement)[0]
+        from_seen = False
+        for token in parsed.tokens:
+            if token.is_keyword and token.normalized == 'FROM':
+                from_seen = True
+                continue
+
+            if from_seen and isinstance(token, sqlparse.sql.TokenList):
+                for sub_token in token.tokens:
+                    if isinstance(sub_token, sqlparse.sql.Parenthesis):
+                        for sub_sub_token in sub_token.tokens:
+                            if sub_sub_token.ttype is sqlparse.tokens.DML and sub_sub_token.normalized == 'SELECT':
+                                return True
+        return False
 
     def gql_query(self, statement, parameters=None, **kwargs):
         """Only execute raw SQL statements."""
