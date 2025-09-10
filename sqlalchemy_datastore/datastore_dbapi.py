@@ -17,6 +17,7 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import os
+import re
 import base64
 import logging
 import collections
@@ -24,7 +25,7 @@ from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
 from sqlalchemy import types
 from datetime import datetime
-from typing import Any, List, Tuple 
+from typing import Any, List, Tuple
 from . import _types
 import requests
 from requests import Response
@@ -32,6 +33,7 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 import sqlparse
 
+import pandas as pd
 logger = logging.getLogger('sqlalchemy.dialects.datastore_dbapi')
 
 apilevel = "2.0"
@@ -119,7 +121,7 @@ class Cursor:
         """Execute a Datastore operation."""
         if self._closed:
             raise Error("Cursor is closed.")
-        
+
         if self._is_derived_query(statements):
             self.execute_orm(statements, parameters)
         else:
@@ -224,131 +226,131 @@ class Cursor:
 
         logging.debug(f"[DataStore DBAPI] Executing: {statements} with parameters: {parameters}")
 
-        try:
-            result = self._execute(statements, **parameters)
+        parsed = sqlparse.parse(statements)[0]
 
-            if isinstance(result, tuple) and len(result) == 2:
-                # Case: query operation returns (rows, schema)
-                rows, schema = result
-            elif isinstance(result, list):
-                # Fallback: treat as rows
-                rows = result
-                schema = self._infer_schema_from_rows(rows) if rows else ()
-            elif isinstance(result, dict):
-                # Case: insert/update/delete operations return dict with status/id
-                rows = [result]
-                schema = self._create_schema_from_dict(result)
-            else:
-                rows = []
-                schema = ()
+        # 1. query the sub query table
+        subquery_node = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Identifier)), None)
+        match = re.search(r'\((.*?)\)', subquery_node.value, re.DOTALL)
+        if match:
+            subquery_sql = match.group(1) # group(1) 获取捕获组的内容
+            subquery_sql = subquery_sql.strip()
 
-            self.rowcount = len(rows) if rows else 0
-            self._set_description(schema)
-            self._query_results = rows
-            self._query_rows = iter(self._query_results)
+        # Execute subquery
+        self.gql_query(subquery_sql, parameters)
+        subquery_rows = self.fetchall()
+        subquery_description = self.description
 
-        except Exception as e:
-            self.rowcount = -1
+        if not subquery_rows:
+            self.rowcount = 0
+            self._set_description(())
             self._query_results = []
-            self._query_rows = iter(self._query_results)
-            self.description = None
-            raise OperationalError(f"Execution failed: {str(e)}", {}, None)
+            self._query_rows = iter([])
+            return
 
-    def _execute(self, operation, **kw):
-        """Execute the Datastore operation."""
-        op_type = operation["type"]
-        kind = operation["kind"]
+        # 2. turn to pandas dataframe
+        subquery_columns = [d[0] for d in subquery_description]
+        df = pd.DataFrame(subquery_rows, columns=subquery_columns)
 
-        if op_type == "query":
-            datastore_query = self._datastore_client.query(kind=kind)
+        # 3. according to the sql tokens, add the filter, limit and sorting to the dataframe
+        # For example:
+        # SELECT ' \
+        # 'task AS task, ' \
+        # 'count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" ' \
+        # 'FROM (SELECT * from tasks) AS virtual_table ' \
+        # 'GROUP BY description ' \
+        # 'ORDER BY "COUNT_DISTINCT(rewards)" ' \
+        # 'DESC LIMIT 10'
 
-            # Apply filters
-            for prop, op, val in operation["filters"]:
-                datastore_query.add_filter(prop, op, val)
+        #  SELECT
+        #         name AS name,
+        #         age AS age,
+        #         country AS country,
+        #         create_time AS create_time,
+        #         description AS description
+        #     FROM (
+        #         SELECT * FROM users
+        #         ) AS virtual_table
+        #     LIMIT 10
 
-            # Apply order by
-            for prop, direction in operation["order_by"]:
-                if direction == "ASCENDING":
-                    datastore_query.order = [prop]
-                else:
-                    datastore_query.order = [f"-{prop}"]
+        # Extract and apply WHERE clause
+        where_clause_token = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Where)), None)
+        if where_clause_token:
+            # This is a simplified filter parser. It might need to be more robust for complex conditions.
+            # It currently handles simple comparisons and AND conjunctions.
+            # e.g., df = df.query('age > 20 and name == "John"')
+            where_str = where_clause_token.value.replace('WHERE', '').strip()
+            # A simple attempt to make it pandas-compatible. This is not foolproof.
+            # It replaces SQL operators with Python/pandas equivalents.
+            where_str = where_str.replace('=', '==')
+            try:
+                df = df.query(where_str, engine='python')
+            except Exception as e:
+                logging.warning(f"Could not apply WHERE clause to DataFrame: {e}")
 
-            # Apply limit and offset
-            limit = operation["limit"]
-            offset = operation["offset"]
+        # Extract and apply ORDER BY clause
+        order_by_token = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Order)), None)
+        if order_by_token:
+            order_expressions = [token for token in order_by_token.tokens if token.ttype is not sqlparse.tokens.Punctuation and not token.is_whitespace]
+            order_columns = []
+            ascending_orders = []
+            for expr in order_expressions:
+                if expr.normalized in ('ORDER BY', 'DESC', 'ASC'):
+                    continue
+                order_columns.append(expr.get_real_name())
+                # Default to ascending unless DESC is found
+                ascending = not (expr.token_next(0) and expr.token_next(0)[1].normalized == 'DESC')
+                ascending_orders.append(ascending)
+            if order_columns:
+                df = df.sort_values(by=order_columns, ascending=ascending_orders)
 
-            results = []
-            for entity in datastore_query.fetch(limit=limit, offset=offset):
-                row_data = dict(entity)
-                row_data["id"] = entity.key.id_or_name
-                results.append(row_data)
+        # Extract and apply LIMIT and OFFSET
+        limit_val, offset_val = None, None
+        limit_token = next((t for t in parsed.tokens if t.ttype is sqlparse.tokens.Keyword and t.normalized == 'LIMIT'), None)
+        if limit_token:
+            limit_val_token = limit_token.token_next(skip_ws=True)
+            if limit_val_token and limit_val_token[1].ttype is sqlparse.tokens.Number.Integer:
+                limit_val = int(limit_val_token[1].value)
 
-            # Create schema from results
-            schema = self._infer_schema_from_rows(results) if results else ()
-            return results, schema
+        offset_token = next((t for t in parsed.tokens if t.ttype is sqlparse.tokens.Keyword and t.normalized == 'OFFSET'), None)
+        if offset_token:
+            offset_val_token = offset_token.token_next(skip_ws=True)
+            if offset_val_token and offset_val_token[1].ttype is sqlparse.tokens.Number.Integer:
+                offset_val = int(offset_val_token[1].value)
 
-        elif op_type == "lookup":
-            # Direct lookup by ID
-            key_id = operation["id"]
-            key = self._datastore_client.key(kind, key_id)
-            entity = self._datastore_client.get(key)
-            if entity:
-                row_data = dict(entity)
-                row_data["id"] = entity.key.id_or_name
-                return [row_data]
-            return []
+        if offset_val is not None:
+            df = df.iloc[offset_val:]
+        if limit_val is not None:
+            df = df.head(limit_val)
 
-        elif op_type == "insert":
-            entity = datastore.Entity(
-                self._datastore_client.key(kind, operation["key_name"])
-                if operation["key_name"]
-                else self._datastore_client.key(kind)
-            )
-            entity.update(operation["data"])
-            self._datastore_client.put(entity)
-            return {"id": entity.key.id_or_name}
+        # Finalize results
+        rows = [tuple(x) for x in df.to_numpy()]
+        schema = self._create_schema_from_df(df)
+        self.rowcount = len(rows) if rows else 0
+        self._set_description(schema)
+        self._query_results = rows
+        self._query_rows = iter(self._query_results)
 
-        elif op_type == "update":
-            key = self._datastore_client.key(kind, operation["id"])
-            entity = self._datastore_client.get(key)
-            if entity:
-                entity.update(operation["data"])
-                self._datastore_client.put(entity)
-                return {"id": entity.key.id_or_name}
-            raise OperationalError("Entity not found for update.", {}, None)
-
-        elif op_type == "delete":
-            key = self._datastore_client.key(kind, operation["id"])
-            self._datastore_client.delete(key)
-            return {"id": operation["id"]}
-
-        elif op_type == "drop_kind":
-            query = self._datastore_client.query(kind=kind)
-            keys_to_delete = [entity.key for entity in query.fetch()]
-            if keys_to_delete:
-                self._datastore_client.delete_multi(keys_to_delete)
-            return {"status": f"Deleted all entities of kind: {kind}"}
-
-        elif op_type == "create_kind":
-            return {"status": f"Kind {kind} acknowledged. No schema created."}
-
-        else:
-            raise OperationalError(
-                f"Unsupported Datastore operation: {op_type}", {}, None
-            )
-
-    def _infer_schema_from_rows(self, rows):
-        """Infer schema from the first row of data"""
-        if not rows or not isinstance(rows[0], dict):
-            return ()
-
-        first_row = rows[0]
+    def _create_schema_from_df(self, df: pd.DataFrame) -> tuple:
+        """Create schema from a pandas DataFrame."""
         schema = []
-        for field_name, field_value in first_row.items():
+        for col_name, dtype in df.dtypes.items():
+            if pd.api.types.is_string_dtype(dtype):
+                sa_type = types.String
+            elif pd.api.types.is_integer_dtype(dtype):
+                sa_type = types.Integer
+            elif pd.api.types.is_float_dtype(dtype):
+                sa_type = types.Float
+            elif pd.api.types.is_bool_dtype(dtype):
+                sa_type = types.Boolean
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                sa_type = types.DateTime
+            else:
+                sa_type = types.String  # Fallback
+
             schema.append(
                 Column(
-                    name=field_name,
-                    type_code=type_map.get(type(field_value), types.String)(),
+                    name=col_name,
+                    type_code=sa_type(),
                     display_size=None,
                     internal_size=None,
                     precision=None,

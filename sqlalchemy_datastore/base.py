@@ -18,7 +18,6 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import logging
 from typing import Any, List, Optional
-import json
 from concurrent import futures
 
 from . import _types
