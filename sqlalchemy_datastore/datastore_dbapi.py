@@ -31,7 +31,9 @@ import requests
 from requests import Response
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
-import sqlparse
+from sqlglot import tokenize, tokens
+from sqlglot import exp, parse_one
+from sqlglot.tokens import TokenType
 
 import pandas as pd
 logger = logging.getLogger('sqlalchemy.dialects.datastore_dbapi')
@@ -122,29 +124,23 @@ class Cursor:
         if self._closed:
             raise Error("Cursor is closed.")
 
-        if self._is_derived_query(statements):
-            self.execute_orm(statements, parameters)
+        tokens = tokenize(statements)
+        if self._is_derived_query(tokens):
+            self.execute_orm(statements, parameters, tokens)
         else:
             self.gql_query(statements, parameters)
 
-    def _is_derived_query(self, statement: str) -> bool:
+    def _is_derived_query(self, tokens: List[tokens.Token]) -> bool:
         """
         Checks if the SQL statement contains a derived table (subquery in FROM).
         This is a more reliable way to distinguish complex ORM queries from simple GQL.
         """
-        parsed = sqlparse.parse(statement)[0]
-        from_seen = False
-        for token in parsed.tokens:
-            if token.is_keyword and token.normalized == 'FROM':
-                from_seen = True
-                continue
-
-            if from_seen and isinstance(token, sqlparse.sql.TokenList):
-                for sub_token in token.tokens:
-                    if isinstance(sub_token, sqlparse.sql.Parenthesis):
-                        for sub_sub_token in sub_token.tokens:
-                            if sub_sub_token.ttype is sqlparse.tokens.DML and sub_sub_token.normalized == 'SELECT':
-                                return True
+        select_seen = 0
+        for token in tokens:
+            if token.token_type == TokenType.SELECT:
+                select_seen += 1
+                if select_seen >= 2:
+                    return True
         return False
 
     def gql_query(self, statement, parameters=None, **kwargs):
@@ -220,115 +216,58 @@ class Cursor:
             self.rowcount = affected_count
             self._closed = True
 
-    def execute_orm(self, statements: dict, parameters=None):
+    def execute_orm(self, statement: str, parameters=None, tokens: List[tokens.Token] = []):
         if parameters is None:
             parameters = {}
 
-        logging.debug(f"[DataStore DBAPI] Executing: {statements} with parameters: {parameters}")
+        logging.debug(f"[DataStore DBAPI] Executing ORM query: {statement} with parameters: {parameters}")
 
-        parsed = sqlparse.parse(statements)[0]
+        parsed = parse_one(statement)
+        if not isinstance(parsed, exp.Select) or not parsed.args.get("from"):
+            raise ProgrammingError("Unsupported ORM query structure.")
 
-        # 1. query the sub query table
-        subquery_node = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Identifier)), None)
-        match = re.search(r'\((.*?)\)', subquery_node.value, re.DOTALL)
-        if match:
-            subquery_sql = match.group(1) # group(1) 获取捕获组的内容
-            subquery_sql = subquery_sql.strip()
+        from_clause = parsed.args["from"].this
+        if not isinstance(from_clause, exp.Subquery):
+            raise ProgrammingError("Expected a subquery in the FROM clause.")
 
-        # Execute subquery
-        self.gql_query(subquery_sql, parameters)
-        subquery_rows = self.fetchall()
+        subquery_sql = from_clause.this.sql()
+
+        # 1. Query the subquery table
+        self.gql_query(subquery_sql)
+        subquery_results = self.fetchall()
         subquery_description = self.description
 
-        if not subquery_rows:
-            self.rowcount = 0
-            self._set_description(())
-            self._query_results = []
-            self._query_rows = iter([])
-            return
+        # 2. Turn to pandas dataframe
+        if not subquery_description:
+            df = pd.DataFrame(subquery_results)
+        else:
+            column_names = [col[0] for col in subquery_description]
+            df = pd.DataFrame(subquery_results, columns=column_names)
 
-        # 2. turn to pandas dataframe
-        subquery_columns = [d[0] for d in subquery_description]
-        df = pd.DataFrame(subquery_rows, columns=subquery_columns)
+        # 3. Apply outer query logic
+        if parsed.args.get("group"):
+            group_by_cols = [e.sql() for e in parsed.args["group"].expressions]
+            agg_funcs = {
+                p.alias_or_name: (p.this.expressions[0].sql(), p.this.key.lower())
+                for p in parsed.expressions if isinstance(p.this, exp.AggFunc)
+            }
+            df = df.groupby(group_by_cols).agg(**agg_funcs).reset_index()
 
-        # 3. according to the sql tokens, add the filter, limit and sorting to the dataframe
-        # For example:
-        # SELECT ' \
-        # 'task AS task, ' \
-        # 'count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" ' \
-        # 'FROM (SELECT * from tasks) AS virtual_table ' \
-        # 'GROUP BY description ' \
-        # 'ORDER BY "COUNT_DISTINCT(rewards)" ' \
-        # 'DESC LIMIT 10'
+        if parsed.args.get("order"):
+            order_by_cols = [e.this.sql() for e in parsed.args["order"].expressions]
+            ascending = [not e.args.get("desc", False) for e in parsed.args["order"].expressions]
+            df = df.sort_values(by=order_by_cols, ascending=ascending)
 
-        #  SELECT
-        #         name AS name,
-        #         age AS age,
-        #         country AS country,
-        #         create_time AS create_time,
-        #         description AS description
-        #     FROM (
-        #         SELECT * FROM users
-        #         ) AS virtual_table
-        #     LIMIT 10
-
-        # Extract and apply WHERE clause
-        where_clause_token = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Where)), None)
-        if where_clause_token:
-            # This is a simplified filter parser. It might need to be more robust for complex conditions.
-            # It currently handles simple comparisons and AND conjunctions.
-            # e.g., df = df.query('age > 20 and name == "John"')
-            where_str = where_clause_token.value.replace('WHERE', '').strip()
-            # A simple attempt to make it pandas-compatible. This is not foolproof.
-            # It replaces SQL operators with Python/pandas equivalents.
-            where_str = where_str.replace('=', '==')
-            try:
-                df = df.query(where_str, engine='python')
-            except Exception as e:
-                logging.warning(f"Could not apply WHERE clause to DataFrame: {e}")
-
-        # Extract and apply ORDER BY clause
-        order_by_token = next((t for t in parsed.tokens if isinstance(t, sqlparse.sql.Order)), None)
-        if order_by_token:
-            order_expressions = [token for token in order_by_token.tokens if token.ttype is not sqlparse.tokens.Punctuation and not token.is_whitespace]
-            order_columns = []
-            ascending_orders = []
-            for expr in order_expressions:
-                if expr.normalized in ('ORDER BY', 'DESC', 'ASC'):
-                    continue
-                order_columns.append(expr.get_real_name())
-                # Default to ascending unless DESC is found
-                ascending = not (expr.token_next(0) and expr.token_next(0)[1].normalized == 'DESC')
-                ascending_orders.append(ascending)
-            if order_columns:
-                df = df.sort_values(by=order_columns, ascending=ascending_orders)
-
-        # Extract and apply LIMIT and OFFSET
-        limit_val, offset_val = None, None
-        limit_token = next((t for t in parsed.tokens if t.ttype is sqlparse.tokens.Keyword and t.normalized == 'LIMIT'), None)
-        if limit_token:
-            limit_val_token = limit_token.token_next(skip_ws=True)
-            if limit_val_token and limit_val_token[1].ttype is sqlparse.tokens.Number.Integer:
-                limit_val = int(limit_val_token[1].value)
-
-        offset_token = next((t for t in parsed.tokens if t.ttype is sqlparse.tokens.Keyword and t.normalized == 'OFFSET'), None)
-        if offset_token:
-            offset_val_token = offset_token.token_next(skip_ws=True)
-            if offset_val_token and offset_val_token[1].ttype is sqlparse.tokens.Number.Integer:
-                offset_val = int(offset_val_token[1].value)
-
-        if offset_val is not None:
-            df = df.iloc[offset_val:]
-        if limit_val is not None:
-            df = df.head(limit_val)
+        if parsed.args.get("limit"):
+            limit = int(parsed.args["limit"].expression.sql())
+            df = df.head(limit)
 
         # Finalize results
         rows = [tuple(x) for x in df.to_numpy()]
         schema = self._create_schema_from_df(df)
         self.rowcount = len(rows) if rows else 0
         self._set_description(schema)
-        self._query_results = rows
-        self._query_rows = iter(self._query_results)
+        self._query_rows = iter(rows)
 
     def _create_schema_from_df(self, df: pd.DataFrame) -> tuple:
         """Create schema from a pandas DataFrame."""
