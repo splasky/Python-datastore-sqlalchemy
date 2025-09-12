@@ -37,7 +37,6 @@ from sqlalchemy.engine.interfaces import (
 from google.cloud import firestore_admin_v1
 from google.cloud.firestore_admin_v1.types import Database
 from google.oauth2 import service_account
-import sqlparse
 
 logger = logging.getLogger("sqlalchemy.dialects.CloudDatastore")
 
