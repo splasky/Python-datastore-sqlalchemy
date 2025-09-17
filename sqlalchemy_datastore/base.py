@@ -76,7 +76,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         *args,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super(CloudDatastoreDialect, self).__init__(*args, **kwargs)
         self.arraysize = arraysize
         self.credentials_path = credentials_path
         self.credentials_info = credentials_info
@@ -88,7 +88,6 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.dataset_id = None
         self.list_tables_page_size = list_tables_page_size
         self._client = None
-        self.credentials = None
 
     @classmethod
     def dbapi(cls):
