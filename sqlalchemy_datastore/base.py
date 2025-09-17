@@ -29,8 +29,8 @@ from sqlalchemy.engine import default, Connection
 from sqlalchemy import exc
 from sqlalchemy.sql import Select
 from sqlalchemy.engine.interfaces import (
-    DBAPICursor,
-    _DBAPISingleExecuteParams,
+    # DBAPICursor,
+    # _DBAPISingleExecuteParams,
     ExecutionContext,
 )
 
@@ -255,9 +255,11 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
     def do_execute(
         self,
-        cursor: DBAPICursor,
+        cursor,
+        # cursor: DBAPICursor, TODO: Uncomment when superset allow sqlalchemy version >= 2.0 
         statement: str,
-        parameters: Optional[_DBAPISingleExecuteParams],
+        # parameters: Optional[], TODO: Uncomment when superset allow sqlalchemy version >= 2.0 
+        parameters,
         context: Optional[ExecutionContext] = None,
     ) -> None:
         cursor.execute(statement)
