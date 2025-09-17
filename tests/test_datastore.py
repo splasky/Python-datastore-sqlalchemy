@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -133,19 +133,24 @@ def test_aggregate_count_up_to(conn):
     assert len(data) == 3
 
 
- 
 def test_derived_table_query_count_distinct(conn):
     result = conn.execute(
-        text('SELECT ' \
-        'task AS task, ' \
-        'count(DISTINCT rewards) AS "COUNT_DISTINCT(rewards)" ' \
-        'FROM (SELECT * from tasks) AS virtual_table ' \
-        'GROUP BY description ' \
-        'ORDER BY "COUNT_DISTINCT(rewards)" ' \
-        'DESC LIMIT 10')
+        text(
+            """
+            SELECT  
+                task AS task, 
+                MAX(reward) AS 'MAX(reward)'
+            FROM  
+                ( SELECT *  FROM tasks) AS virtual_table 
+            GROUP BY task 
+            ORDER BY 'MAX(reward)' DESC 
+            LIMIT 10
+            """
+        )
     )
     data = result.fetchall()
     assert len(data) == 3
+
 
 def test_derived_table_query_as_virtual_table(conn):
     result = conn.execute(

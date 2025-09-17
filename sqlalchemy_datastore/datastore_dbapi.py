@@ -244,23 +244,44 @@ class Cursor:
             column_names = [col[0] for col in subquery_description]
             df = pd.DataFrame(subquery_results, columns=column_names)
 
+        # Add computed columns from SELECT expressions before grouping or ordering
+        for p in parsed.expressions:
+            if isinstance(p, exp.Alias) and not p.find(exp.AggFunc):
+                # This is a simplified expression evaluator for computed columns.
+                # It converts "col" to col and leaves other things as is.
+                expr_str = re.sub(r'"(\w+)"', r'\1', p.this.sql())
+                try:
+                    # Use assign to add new columns based on expressions
+                    df = df.assign(**{p.alias: df.eval(expr_str, engine='python')})
+                except Exception as e:
+                    logging.warning(f"Could not evaluate expression '{expr_str}': {e}")
+
         # 3. Apply outer query logic
         if parsed.args.get("group"):
-            group_by_cols = [e.sql() for e in parsed.args["group"].expressions]
-            agg_funcs = {
-                p.alias_or_name: (p.this.expressions[0].sql(), p.this.key.lower())
-                for p in parsed.expressions if isinstance(p.this, exp.AggFunc)
-            }
-            df = df.groupby(group_by_cols).agg(**agg_funcs).reset_index()
-
+            group_by_cols = [e.name for e in parsed.args.get("group").expressions]
+            col_renames = {} 
+            for p in parsed.expressions:
+                if isinstance(p.this, exp.AggFunc):
+                    original_col_name = p.this.expressions[0].name if p.this.expressions else p.this.this.this.name 
+                    agg_func_name = p.this.key.lower() 
+                    desired_sql_alias = p.alias_or_name
+                    col_renames = {"temp_agg": desired_sql_alias}
+                    df = df.groupby(group_by_cols).agg(temp_agg=(original_col_name, agg_func_name)).reset_index().rename(columns=col_renames)
+            
         if parsed.args.get("order"):
-            order_by_cols = [e.this.sql() for e in parsed.args["order"].expressions]
+            order_by_cols = [e.this.name for e in parsed.args["order"].expressions]
             ascending = [not e.args.get("desc", False) for e in parsed.args["order"].expressions]
             df = df.sort_values(by=order_by_cols, ascending=ascending)
 
         if parsed.args.get("limit"):
             limit = int(parsed.args["limit"].expression.sql())
             df = df.head(limit)
+
+        # Final column selection
+        if not any(isinstance(p, exp.Star) for p in parsed.expressions):
+            final_columns = [p.alias_or_name for p in parsed.expressions]
+            # Ensure all selected columns exist in the DataFrame before selecting
+            df = df[[col for col in final_columns if col in df.columns]]
 
         # Finalize results
         rows = [tuple(x) for x in df.to_numpy()]
@@ -290,23 +311,6 @@ class Cursor:
                 Column(
                     name=col_name,
                     type_code=sa_type(),
-                    display_size=None,
-                    internal_size=None,
-                    precision=None,
-                    scale=None,
-                    null_ok=True,
-                )
-            )
-        return tuple(schema)
-
-    def _create_schema_from_dict(self, result_dict):
-        """Create schema from a result dictionary (for insert/update/delete operations)"""
-        schema = []
-        for field_name, field_value in result_dict.items():
-            schema.append(
-                Column(
-                    name=field_name,
-                    type_code=type_map.get(type(field_value), types.String)(),
                     display_size=None,
                     internal_size=None,
                     precision=None,
