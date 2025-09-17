@@ -1,4 +1,4 @@
-Dialets for SQLAlchemy
+SQLAlchemy dialect for google cloud datastore(firestore mode)
 ========================
 How to install
 ```
