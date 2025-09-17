@@ -2,7 +2,7 @@ Dialets for SQLAlchemy
 ========================
 How to install
 ```
-pip install sqlalchemy-gcp-datastore
+python3 setup.py install
 ```
 SQLAlchemy
 ```python
@@ -14,3 +14,7 @@ conn = engine.connect()
 result = conn.execute("SELECT * from test_table)
 print(result.fetchall())
 ```
+
+## Preview
+<img src="assets/pie.png">
+
