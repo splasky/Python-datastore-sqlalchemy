@@ -222,6 +222,7 @@ class Cursor:
 
         logging.debug(f"[DataStore DBAPI] Executing ORM query: {statement} with parameters: {parameters}")
 
+        statement = statement.replace("`", "'")
         parsed = parse_one(statement)
         if not isinstance(parsed, exp.Select) or not parsed.args.get("from"):
             raise ProgrammingError("Unsupported ORM query structure.")
