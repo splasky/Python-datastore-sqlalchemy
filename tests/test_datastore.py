@@ -172,6 +172,25 @@ def test_derived_table_query_as_virtual_table(conn):
     data = result.fetchall()
     assert len(data) == 3
 
+
+def test_derived_table_query_with_user_key(conn):
+    result = conn.execute(
+        text(
+            """
+              SELECT  
+                assign_user AS assign_user, 
+                MAX(reward) AS 'MAX(reward)'
+            FROM  
+                ( SELECT *  FROM tasks) AS virtual_table 
+            GROUP BY assign_user 
+            ORDER BY 'MAX(reward)' DESC 
+            LIMIT 10
+            """
+        )
+    )
+    data = result.fetchall()
+    assert len(data) == 3
+
 @pytest.mark.skip
 def test_insert_data(conn):
     result = conn.execute(text("INSERT INTO users (name, age) VALUES ('Virginia Robertson', 25)"))
