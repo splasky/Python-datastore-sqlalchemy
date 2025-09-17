@@ -1,9 +1,0 @@
-[submodule "pep249"]
-	path = pep249
-	url = https://github.com/thesketh/pep249.git
-[submodule "sqlalchemy"]
-	path = sqlalchemy
-	url = https://github.com/sqlalchemy/sqlalchemy.git
-[submodule "python-datastore"]
-	path = python-datastore
-	url = https://github.com/googleapis/python-datastore.git
