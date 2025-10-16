@@ -222,8 +222,8 @@ class TestGQLOrderBy:
         result = conn.execute(text("SELECT * FROM users ORDER BY name ASC, age DESC"))
         data = result.all()
         assert len(data) == 3, "Expected 3 rows ordered by name ASC, age DESC"
-        assert data[0].name == "Travis 'Ghost' Hayes"
-        assert data[1].name == "Elmerulia Frixell"
+        assert data[0].name == "Elmerulia Frixell"
+        assert data[1].name == "Travis 'Ghost' Hayes"
         assert data[2].name == "Virginia Robertson"
     
     def test_order_by_without_direction(self, conn):
@@ -299,7 +299,7 @@ class TestGQLSyntheticLiterals:
     
     def test_array_literal(self, conn):
         """Test ARRAY(value1, value2, ...)"""
-        result = conn.execute(text("SELECT * FROM users WHERE tags = ARRAY('admin', 'user')"))
+        result = conn.execute(text("SELECT * FROM users WHERE tags = ARRAY('Wild', 'house')"))
         data = result.all()
         assert len(data) >= 0, "Expected rows matching ARRAY literal"
     
