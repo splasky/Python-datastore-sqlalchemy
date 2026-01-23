@@ -18,6 +18,8 @@ print(result.fetchall())
 ## Preview
 <img src="assets/pie.png">
 
+## How to contribute
+Feel free to open issues and pull requests on github.
 
 ## References
 - [Develop a SQLAlchemy dialects](https://hackmd.io/lsBW5GCVR82SORyWZ1cssA?view)

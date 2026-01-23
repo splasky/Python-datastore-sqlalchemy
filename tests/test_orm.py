@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -17,19 +17,20 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 from datetime import datetime, timezone
+
 from models.user import User
 
 
 def test_user_crud(session):
     user_info = {
-        "name":"因幡めぐる",
-        "age":float('nan'), # or 16
-        "country":"Japan",
+        "name": "因幡めぐる",
+        "age": 16,
+        "country": "Japan",
         "create_time": datetime(2025, 1, 1, 1, 2, 3, 4, tzinfo=timezone.utc),
         "description": "Ciallo～(∠・ω< )⌒☆",
-        "settings":{
+        "settings": {
             "team": "超自然研究部",
-            "grade": 10, # 10th grade
+            "grade": 10,  # 10th grade
             "birthday": "04-18",
             "school": "姬松學園",
         },
@@ -42,15 +43,15 @@ def test_user_crud(session):
         create_time=user_info["create_time"],
         description=user_info["description"],
         settings={
-            "team": user_info["settings"]["settings"],
+            "team": user_info["settings"]["team"],
             "grade": user_info["settings"]["grade"],
             "birthday": user_info["settings"]["birthday"],
             "school": user_info["settings"]["school"],
         },
     )
-    user_id = user.id
     session.add(user)
     session.commit()
+    user_id = user.id
 
     # Read
     result = session.query(User).filter_by(id=user_id).first()
@@ -63,16 +64,16 @@ def test_user_crud(session):
     assert result.settings == user_info["settings"]
 
     # Update
-    result.age = 16
+    result.age = 17
     session.commit()
 
     updated = session.query(User).filter_by(id=user_id).first()
-    assert updated.value == 16
+    assert updated.age == 17
 
     # Delete
     user_id = user_id
     session.delete(updated)
     session.commit()
 
-    deleted = session.query(user).filter_by(id=user_id).first()
+    deleted = session.query(User).filter_by(id=user_id).first()
     assert deleted is None

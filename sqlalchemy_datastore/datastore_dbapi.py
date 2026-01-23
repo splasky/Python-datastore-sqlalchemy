@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -16,27 +16,28 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+import base64
+import collections
+import logging
 import os
 import re
-import base64
-import logging
-import collections
-from google.cloud import datastore
-from google.cloud.datastore.helpers import GeoPoint
-from sqlalchemy import types
 from datetime import datetime
-from typing import Any, List, Tuple
-from . import _types
-import requests
-from requests import Response
-from google.oauth2 import service_account
-from google.auth.transport.requests import AuthorizedSession
-from sqlglot import tokenize, tokens
-from sqlglot import exp, parse_one
-from sqlglot.tokens import TokenType
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-logger = logging.getLogger('sqlalchemy.dialects.datastore_dbapi')
+import requests
+from google.auth.transport.requests import AuthorizedSession
+from google.cloud import datastore
+from google.cloud.datastore.helpers import GeoPoint
+from google.oauth2 import service_account
+from requests import Response
+from sqlalchemy import types
+from sqlglot import exp, parse_one, tokenize, tokens
+from sqlglot.tokens import TokenType
+
+from . import _types
+
+logger = logging.getLogger("sqlalchemy.dialects.datastore_dbapi")
 
 apilevel = "2.0"
 threadsafety = 2
@@ -118,17 +119,314 @@ class Cursor:
         self._query_rows = None
         self._closed = False
         self.description = None
+        self.lastrowid = None
 
     def execute(self, statements, parameters=None):
         """Execute a Datastore operation."""
         if self._closed:
             raise Error("Cursor is closed.")
 
+        # Check for DML statements
+        upper_statement = statements.upper().strip()
+        if upper_statement.startswith("INSERT"):
+            self._execute_insert(statements, parameters)
+            return
+        if upper_statement.startswith("UPDATE"):
+            self._execute_update(statements, parameters)
+            return
+        if upper_statement.startswith("DELETE"):
+            self._execute_delete(statements, parameters)
+            return
+
         tokens = tokenize(statements)
         if self._is_derived_query(tokens):
             self.execute_orm(statements, parameters, tokens)
         else:
             self.gql_query(statements, parameters)
+
+    def _execute_insert(self, statement: str, parameters=None):
+        """Execute an INSERT statement using Datastore client."""
+        if parameters is None:
+            parameters = {}
+
+        logging.debug(f"Executing INSERT: {statement} with parameters: {parameters}")
+
+        try:
+            # Parse INSERT statement using sqlglot
+            parsed = parse_one(statement)
+            if not isinstance(parsed, exp.Insert):
+                raise ProgrammingError(f"Expected INSERT statement, got: {type(parsed)}")
+
+            # Get table/kind name
+            # For INSERT, parsed.this is a Schema containing the table and columns
+            schema_expr = parsed.this
+            if isinstance(schema_expr, exp.Schema):
+                # Schema has 'this' which is the table
+                table_expr = schema_expr.this
+                if isinstance(table_expr, exp.Table):
+                    kind = table_expr.name
+                else:
+                    kind = str(table_expr)
+            elif isinstance(schema_expr, exp.Table):
+                kind = schema_expr.name
+            else:
+                raise ProgrammingError("Could not determine table name from INSERT")
+
+            # Get column names from Schema's expressions
+            columns = []
+            if isinstance(schema_expr, exp.Schema) and schema_expr.expressions:
+                for col in schema_expr.expressions:
+                    if hasattr(col, "name"):
+                        columns.append(col.name)
+                    else:
+                        columns.append(str(col))
+
+            # Get values
+            values_list = []
+            values_expr = parsed.args.get("expression")
+            if values_expr and hasattr(values_expr, "expressions"):
+                for tuple_expr in values_expr.expressions:
+                    if hasattr(tuple_expr, "expressions"):
+                        row_values = []
+                        for val in tuple_expr.expressions:
+                            row_values.append(self._parse_insert_value(val, parameters))
+                        values_list.append(row_values)
+            elif values_expr:
+                # Single row VALUES clause
+                row_values = []
+                if hasattr(values_expr, "expressions"):
+                    for val in values_expr.expressions:
+                        row_values.append(self._parse_insert_value(val, parameters))
+                    values_list.append(row_values)
+
+            # Create entities and insert them
+            entities_created = 0
+            for row_values in values_list:
+                # Create entity key (auto-generated)
+                key = self._datastore_client.key(kind)
+                entity = datastore.Entity(key=key)
+
+                # Set entity properties
+                for i, col in enumerate(columns):
+                    if i < len(row_values):
+                        entity[col] = row_values[i]
+
+                # Put entity to datastore
+                self._datastore_client.put(entity)
+                entities_created += 1
+                # Save the last inserted entity's key ID for lastrowid
+                if entity.key.id is not None:
+                    self.lastrowid = entity.key.id
+                elif entity.key.name is not None:
+                    # For named keys, use a hash of the name as a numeric ID
+                    self.lastrowid = hash(entity.key.name) & 0x7FFFFFFFFFFFFFFF
+
+            self.rowcount = entities_created
+            self._query_rows = iter([])
+            self.description = None
+
+        except Exception as e:
+            logging.error(f"INSERT failed: {e}")
+            raise ProgrammingError(f"INSERT failed: {e}")
+
+    def _execute_update(self, statement: str, parameters=None):
+        """Execute an UPDATE statement using Datastore client."""
+        if parameters is None:
+            parameters = {}
+
+        logging.debug(f"Executing UPDATE: {statement} with parameters: {parameters}")
+
+        try:
+            parsed = parse_one(statement)
+            if not isinstance(parsed, exp.Update):
+                raise ProgrammingError(f"Expected UPDATE statement, got: {type(parsed)}")
+
+            # Get table/kind name
+            table_expr = parsed.this
+            if isinstance(table_expr, exp.Table):
+                kind = table_expr.name
+            else:
+                raise ProgrammingError("Could not determine table name from UPDATE")
+
+            # Get the WHERE clause to find the entity key
+            where = parsed.args.get("where")
+            if not where:
+                raise ProgrammingError("UPDATE without WHERE clause is not supported")
+
+            # Extract the key ID from WHERE clause (e.g., WHERE id = :id_1)
+            entity_key_id = self._extract_key_id_from_where(where, parameters)
+            if entity_key_id is None:
+                raise ProgrammingError("Could not extract entity key from WHERE clause")
+
+            # Get the entity
+            key = self._datastore_client.key(kind, entity_key_id)
+            entity = self._datastore_client.get(key)
+            if entity is None:
+                self.rowcount = 0
+                self._query_rows = iter([])
+                self.description = None
+                return
+
+            # Apply the SET values
+            for set_expr in parsed.args.get("expressions", []):
+                if isinstance(set_expr, exp.EQ):
+                    col_name = set_expr.left.name if hasattr(set_expr.left, "name") else str(set_expr.left)
+                    value = self._parse_update_value(set_expr.right, parameters)
+                    entity[col_name] = value
+
+            # Save the entity
+            self._datastore_client.put(entity)
+            self.rowcount = 1
+            self._query_rows = iter([])
+            self.description = None
+
+        except Exception as e:
+            logging.error(f"UPDATE failed: {e}")
+            raise ProgrammingError(f"UPDATE failed: {e}") from e
+
+    def _execute_delete(self, statement: str, parameters=None):
+        """Execute a DELETE statement using Datastore client."""
+        if parameters is None:
+            parameters = {}
+
+        logging.debug(f"Executing DELETE: {statement} with parameters: {parameters}")
+
+        try:
+            parsed = parse_one(statement)
+            if not isinstance(parsed, exp.Delete):
+                raise ProgrammingError(f"Expected DELETE statement, got: {type(parsed)}")
+
+            # Get table/kind name
+            table_expr = parsed.this
+            if isinstance(table_expr, exp.Table):
+                kind = table_expr.name
+            else:
+                raise ProgrammingError("Could not determine table name from DELETE")
+
+            # Get the WHERE clause to find the entity key
+            where = parsed.args.get("where")
+            if not where:
+                raise ProgrammingError("DELETE without WHERE clause is not supported")
+
+            # Extract the key ID from WHERE clause
+            entity_key_id = self._extract_key_id_from_where(where, parameters)
+            if entity_key_id is None:
+                raise ProgrammingError("Could not extract entity key from WHERE clause")
+
+            # Delete the entity
+            key = self._datastore_client.key(kind, entity_key_id)
+            self._datastore_client.delete(key)
+            self.rowcount = 1
+            self._query_rows = iter([])
+            self.description = None
+
+        except Exception as e:
+            logging.error(f"DELETE failed: {e}")
+            raise ProgrammingError(f"DELETE failed: {e}") from e
+
+    def _extract_key_id_from_where(self, where_expr, parameters: dict) -> Optional[int]:
+        """Extract entity key ID from WHERE clause."""
+        # Handle WHERE id = :param or WHERE id = value
+        if isinstance(where_expr, exp.Where):
+            where_expr = where_expr.this
+
+        if isinstance(where_expr, exp.EQ):
+            left = where_expr.left
+            right = where_expr.right
+
+            # Check if left side is 'id'
+            col_name = left.name if hasattr(left, "name") else str(left)
+            if col_name.lower() == "id":
+                return self._parse_key_value(right, parameters)
+
+        return None
+
+    def _parse_key_value(self, val_expr, parameters: dict) -> Optional[int]:
+        """Parse a value expression to get key ID."""
+        if isinstance(val_expr, exp.Literal):
+            if val_expr.is_number:
+                return int(val_expr.this)
+        elif isinstance(val_expr, exp.Placeholder):
+            param_name = val_expr.name or val_expr.this
+            if param_name in parameters:
+                return int(parameters[param_name])
+            if param_name.startswith(":"):
+                param_name = param_name[1:]
+                if param_name in parameters:
+                    return int(parameters[param_name])
+        elif isinstance(val_expr, exp.Parameter):
+            param_name = val_expr.this.this if hasattr(val_expr.this, "this") else str(val_expr.this)
+            if param_name in parameters:
+                return int(parameters[param_name])
+        return None
+
+    def _parse_update_value(self, val_expr, parameters: dict) -> Any:
+        """Parse a value expression from UPDATE SET clause."""
+        if isinstance(val_expr, exp.Literal):
+            if val_expr.is_string:
+                return val_expr.this
+            elif val_expr.is_number:
+                text = val_expr.this
+                if "." in text:
+                    return float(text)
+                return int(text)
+            return val_expr.this
+        elif isinstance(val_expr, exp.Null):
+            return None
+        elif isinstance(val_expr, exp.Boolean):
+            return val_expr.this
+        elif isinstance(val_expr, exp.Placeholder):
+            param_name = val_expr.name or val_expr.this
+            if param_name in parameters:
+                return parameters[param_name]
+            if param_name.startswith(":"):
+                param_name = param_name[1:]
+                if param_name in parameters:
+                    return parameters[param_name]
+            return None
+        elif isinstance(val_expr, exp.Parameter):
+            param_name = val_expr.this.this if hasattr(val_expr.this, "this") else str(val_expr.this)
+            if param_name in parameters:
+                return parameters[param_name]
+            return None
+        else:
+            return str(val_expr.this) if hasattr(val_expr, "this") else str(val_expr)
+
+    def _parse_insert_value(self, val_expr, parameters: dict) -> Any:
+        """Parse a value expression from INSERT statement."""
+        if isinstance(val_expr, exp.Literal):
+            if val_expr.is_string:
+                return val_expr.this
+            elif val_expr.is_number:
+                text = val_expr.this
+                if "." in text:
+                    return float(text)
+                return int(text)
+            return val_expr.this
+        elif isinstance(val_expr, exp.Null):
+            return None
+        elif isinstance(val_expr, exp.Boolean):
+            return val_expr.this
+        elif isinstance(val_expr, exp.Placeholder):
+            # Named parameter like :name
+            param_name = val_expr.name or val_expr.this
+            if param_name and param_name in parameters:
+                return parameters[param_name]
+            # Handle :name format
+            if param_name and param_name.startswith(":"):
+                param_name = param_name[1:]
+                if param_name in parameters:
+                    return parameters[param_name]
+            return None
+        elif isinstance(val_expr, exp.Parameter):
+            # Named parameter
+            param_name = val_expr.this.this if hasattr(val_expr.this, "this") else str(val_expr.this)
+            if param_name in parameters:
+                return parameters[param_name]
+            return None
+        else:
+            # Try to get the string representation
+            return str(val_expr.this) if hasattr(val_expr, "this") else str(val_expr)
 
     def _is_derived_query(self, tokens: List[tokens.Token]) -> bool:
         """
@@ -143,45 +441,665 @@ class Cursor:
                     return True
         return False
 
-    def gql_query(self, statement, parameters=None, **kwargs):
-        """Only execute raw SQL statements."""
+    def _is_aggregation_query(self, statement: str) -> bool:
+        """Check if the statement contains aggregation functions."""
+        upper = statement.upper()
+        # Check for AGGREGATE ... OVER syntax
+        if upper.strip().startswith("AGGREGATE"):
+            return True
+        # Check for aggregation functions in SELECT
+        agg_patterns = [
+            r"\bCOUNT\s*\(",
+            r"\bCOUNT_UP_TO\s*\(",
+            r"\bSUM\s*\(",
+            r"\bAVG\s*\(",
+        ]
+        for pattern in agg_patterns:
+            if re.search(pattern, upper):
+                return True
+        return False
 
+    def _parse_aggregation_query(self, statement: str) -> Dict[str, Any]:
+        """
+        Parse aggregation query and return components.
+        Returns dict with:
+        - 'agg_functions': list of (func_name, column, alias)
+        - 'base_query': the underlying SELECT query
+        - 'is_aggregate_over': whether it's AGGREGATE...OVER syntax
+        """
+        upper = statement.upper().strip()
+        result: Dict[str, Any] = {
+            "agg_functions": [],
+            "base_query": None,
+            "is_aggregate_over": False,
+        }
+
+        # Handle AGGREGATE ... OVER (SELECT ...) syntax
+        if upper.startswith("AGGREGATE"):
+            result["is_aggregate_over"] = True
+            # Extract the inner SELECT query
+            over_match = re.search(
+                r"OVER\s*\(\s*(SELECT\s+.+)\s*\)\s*$",
+                statement,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if over_match:
+                result["base_query"] = over_match.group(1).strip()
+            else:
+                # Fallback - extract everything after OVER
+                over_idx = upper.find("OVER")
+                if over_idx > 0:
+                    # Extract content inside parentheses
+                    remaining = statement[over_idx + 4 :].strip()
+                    if remaining.startswith("("):
+                        paren_depth = 0
+                        for i, c in enumerate(remaining):
+                            if c == "(":
+                                paren_depth += 1
+                            elif c == ")":
+                                paren_depth -= 1
+                                if paren_depth == 0:
+                                    result["base_query"] = remaining[1:i].strip()
+                                    break
+
+            # Parse aggregation functions before OVER
+            agg_part = statement[: upper.find("OVER")].strip()
+            if agg_part.upper().startswith("AGGREGATE"):
+                agg_part = agg_part[9:].strip()  # Remove "AGGREGATE"
+            result["agg_functions"] = self._extract_agg_functions(agg_part)
+        else:
+            # Handle SELECT COUNT(*), SUM(col), etc.
+            result["is_aggregate_over"] = False
+            # Parse the SELECT clause to extract aggregation functions
+            select_match = re.match(
+                r"SELECT\s+(.+?)\s+FROM\s+(.+)$", statement, re.IGNORECASE | re.DOTALL
+            )
+            if select_match:
+                select_clause = select_match.group(1)
+                from_clause = select_match.group(2)
+                result["agg_functions"] = self._extract_agg_functions(select_clause)
+                # Build base query to get all data
+                result["base_query"] = f"SELECT * FROM {from_clause}"
+            else:
+                # Handle SELECT without FROM (e.g., SELECT COUNT(*))
+                select_match = re.match(
+                    r"SELECT\s+(.+)$", statement, re.IGNORECASE | re.DOTALL
+                )
+                if select_match:
+                    select_clause = select_match.group(1)
+                    result["agg_functions"] = self._extract_agg_functions(select_clause)
+                    result["base_query"] = None  # No base query for kindless
+
+        return result
+
+    def _extract_agg_functions(self, clause: str) -> List[Tuple[str, str, str]]:
+        """Extract aggregation functions from a clause."""
+        functions: List[Tuple[str, str, str]] = []
+        # Pattern to match aggregation functions with optional alias
+        patterns = [
+            (
+                r"COUNT_UP_TO\s*\(\s*(\d+)\s*\)(?:\s+AS\s+(\w+))?",
+                "COUNT_UP_TO",
+            ),
+            (r"COUNT\s*\(\s*\*\s*\)(?:\s+AS\s+(\w+))?", "COUNT"),
+            (r"SUM\s*\(\s*(\w+)\s*\)(?:\s+AS\s+(\w+))?", "SUM"),
+            (r"AVG\s*\(\s*(\w+)\s*\)(?:\s+AS\s+(\w+))?", "AVG"),
+        ]
+
+        for pattern, func_name in patterns:
+            for match in re.finditer(pattern, clause, re.IGNORECASE):
+                if func_name == "COUNT":
+                    col = "*"
+                    alias = match.group(1) if match.group(1) else func_name
+                elif func_name == "COUNT_UP_TO":
+                    col = match.group(1)  # The limit number
+                    alias = match.group(2) if match.group(2) else func_name
+                else:
+                    col = match.group(1)
+                    alias = match.group(2) if match.group(2) else func_name
+                functions.append((func_name, col, alias))
+
+        return functions
+
+    def _compute_aggregations(
+        self,
+        rows: List[Tuple],
+        fields: Dict[str, Any],
+        agg_functions: List[Tuple[str, str, str]],
+    ) -> Tuple[List[Tuple], Dict[str, Any]]:
+        """Compute aggregations on the data."""
+        result_values: List[Any] = []
+        result_fields: Dict[str, Any] = {}
+
+        # Get column name to index mapping
+        field_names = list(fields.keys())
+
+        for func_name, col, alias in agg_functions:
+            if func_name == "COUNT":
+                value = len(rows)
+            elif func_name == "COUNT_UP_TO":
+                limit = int(col)
+                value = min(len(rows), limit)
+            elif func_name in ("SUM", "AVG"):
+                # Find the column index
+                if col in field_names:
+                    col_idx = field_names.index(col)
+                    values = [row[col_idx] for row in rows if row[col_idx] is not None]
+                    numeric_values = [v for v in values if isinstance(v, (int, float))]
+                    if func_name == "SUM":
+                        value = sum(numeric_values) if numeric_values else 0
+                    else:  # AVG
+                        value = (
+                            sum(numeric_values) / len(numeric_values)
+                            if numeric_values
+                            else 0
+                        )
+                else:
+                    value = 0
+            else:
+                value = None
+
+            result_values.append(value)
+            result_fields[alias] = (alias, None, None, None, None, None, None)
+
+        return [tuple(result_values)], result_fields
+
+    def _execute_gql_request(self, gql_statement: str) -> Response:
+        """Execute a GQL query and return the response."""
+        body = {
+            "gqlQuery": {
+                "queryString": gql_statement,
+                "allowLiterals": True,
+            }
+        }
+
+        project_id = self._datastore_client.project
         if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            # Request service credentials
             credentials = service_account.Credentials.from_service_account_info(
                 self._datastore_client.credentials_info,
                 scopes=["https://www.googleapis.com/auth/datastore"],
             )
-
-            # Create authorize session
             authed_session = AuthorizedSession(credentials)
-
-        # GQL payload
-        body = {
-            "gqlQuery": {
-                "queryString": statement,
-                "allowLiterals": True,  # FIXME: This may cacuse sql injection
-            }
-        }
-
-        response = Response()
-        project_id = self._datastore_client.project
-        url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
-        if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            response = authed_session.post(url, json=body)
+            url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
+            return authed_session.post(url, json=body)
         else:
-            url = f"http://{os.environ["DATASTORE_EMULATOR_HOST"]}/v1/projects/{project_id}:runQuery"
-            response = requests.post(url, json=body)
+            host = os.environ["DATASTORE_EMULATOR_HOST"]
+            url = f"http://{host}/v1/projects/{project_id}:runQuery"
+            return requests.post(url, json=body)
+
+    def _needs_client_side_filter(self, statement: str) -> bool:
+        """Check if the query needs client-side filtering due to unsupported ops."""
+        upper = statement.upper()
+        # Check for operators not well-supported by emulator
+        unsupported_patterns = [
+            r"\bOR\b",  # OR conditions
+            r"!=",  # Not equals
+            r"<>",  # Not equals (alternate)
+            r"\bNOT\s+IN\b",  # NOT IN
+            r"\bIN\s*\(",  # IN clause (emulator has issues)
+            r"\bHAS\s+ANCESTOR\b",  # HAS ANCESTOR
+            r"\bHAS\s+DESCENDANT\b",  # HAS DESCENDANT
+            r"\bBLOB\s*\(",  # BLOB literal (emulator doesn't support)
+        ]
+        for pattern in unsupported_patterns:
+            if re.search(pattern, upper):
+                return True
+        return False
+
+    def _extract_base_query_for_filter(self, statement: str) -> str:
+        """Extract base query without WHERE clause for client-side filtering."""
+        # Remove WHERE clause to get all data
+        upper = statement.upper()
+        where_idx = upper.find(" WHERE ")
+        if where_idx > 0:
+            # Find the end of WHERE (before ORDER BY, LIMIT, OFFSET)
+            end_patterns = [" ORDER BY ", " LIMIT ", " OFFSET "]
+            end_idx = len(statement)
+            for pattern in end_patterns:
+                idx = upper.find(pattern, where_idx)
+                if idx > 0 and idx < end_idx:
+                    end_idx = idx
+            # Remove WHERE clause
+            base = statement[:where_idx] + statement[end_idx:]
+            return base.strip()
+        return statement
+
+    def _apply_client_side_filter(
+        self, rows: List[Tuple], fields: Dict[str, Any], statement: str
+    ) -> List[Tuple]:
+        """Apply client-side filtering for unsupported WHERE conditions."""
+        # Parse WHERE clause and apply filters
+        upper = statement.upper()
+        where_idx = upper.find(" WHERE ")
+        if where_idx < 0:
+            return rows
+
+        # Find end of WHERE clause
+        end_patterns = [" ORDER BY ", " LIMIT ", " OFFSET "]
+        end_idx = len(statement)
+        for pattern in end_patterns:
+            idx = upper.find(pattern, where_idx)
+            if idx > 0 and idx < end_idx:
+                end_idx = idx
+
+        where_clause = statement[where_idx + 7 : end_idx].strip()
+        field_names = list(fields.keys())
+
+        # Apply filter
+        filtered_rows = []
+        for row in rows:
+            if self._evaluate_where(row, field_names, where_clause):
+                filtered_rows.append(row)
+        return filtered_rows
+
+    def _evaluate_where(
+        self, row: Tuple, field_names: List[str], where_clause: str
+    ) -> bool:
+        """Evaluate WHERE clause against a row. Returns True if row matches."""
+        # Build a context dict from the row
+        context = {}
+        for i, name in enumerate(field_names):
+            if i < len(row):
+                context[name] = row[i]
+
+        # Parse and evaluate the WHERE clause
+        # This is a simplified evaluator for common patterns
+        try:
+            return self._eval_condition(context, where_clause)
+        except Exception:
+            # If evaluation fails, include the row (fail open)
+            return True
+
+    def _eval_condition(self, context: Dict[str, Any], condition: str) -> bool:
+        """Evaluate a single condition or compound condition."""
+        condition = condition.strip()
+
+        # Handle parentheses
+        if condition.startswith("(") and condition.endswith(")"):
+            # Find matching paren
+            depth = 0
+            for i, c in enumerate(condition):
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        if i == len(condition) - 1:
+                            return self._eval_condition(context, condition[1:-1])
+                        break
+
+        # Handle OR (lower precedence)
+        or_match = re.search(r"\bOR\b", condition, re.IGNORECASE)
+        if or_match:
+            # Split on OR, but respect parentheses
+            parts = self._split_on_operator(condition, "OR")
+            if len(parts) > 1:
+                return any(self._eval_condition(context, p) for p in parts)
+
+        # Handle AND (higher precedence)
+        and_match = re.search(r"\bAND\b", condition, re.IGNORECASE)
+        if and_match:
+            parts = self._split_on_operator(condition, "AND")
+            if len(parts) > 1:
+                return all(self._eval_condition(context, p) for p in parts)
+
+        # Handle simple comparisons
+        return self._eval_simple_condition(context, condition)
+
+    def _split_on_operator(self, condition: str, operator: str) -> List[str]:
+        """Split condition on operator while respecting parentheses."""
+        parts: List[str] = []
+        current = ""
+        depth = 0
+        i = 0
+        pattern = re.compile(rf"\b{operator}\b", re.IGNORECASE)
+
+        while i < len(condition):
+            if condition[i] == "(":
+                depth += 1
+                current += condition[i]
+            elif condition[i] == ")":
+                depth -= 1
+                current += condition[i]
+            elif depth == 0:
+                match = pattern.match(condition[i:])
+                if match:
+                    parts.append(current.strip())
+                    current = ""
+                    i += len(match.group()) - 1
+                else:
+                    current += condition[i]
+            else:
+                current += condition[i]
+            i += 1
+
+        if current.strip():
+            parts.append(current.strip())
+        return parts
+
+    def _eval_simple_condition(self, context: Dict[str, Any], condition: str) -> bool:
+        """Evaluate a simple comparison condition."""
+        condition = condition.strip()
+
+        # Handle BLOB equality (before generic handlers, since BLOB literal
+        # would confuse the generic _parse_literal path)
+        blob_eq_match = re.match(
+            r"(\w+)\s*=\s*BLOB\s*\('(.*?)'\)",
+            condition,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if blob_eq_match:
+            field = blob_eq_match.group(1)
+            blob_str = blob_eq_match.group(2)
+            try:
+                blob_bytes = blob_str.encode("latin-1")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                blob_bytes = blob_str.encode("utf-8")
+            field_val = context.get(field)
+            if isinstance(field_val, bytes):
+                return field_val == blob_bytes
+            return False
+
+        # Handle BLOB inequality
+        blob_neq_match = re.match(
+            r"(\w+)\s*!=\s*BLOB\s*\('(.*?)'\)",
+            condition,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if blob_neq_match:
+            field = blob_neq_match.group(1)
+            blob_str = blob_neq_match.group(2)
+            try:
+                blob_bytes = blob_str.encode("latin-1")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                blob_bytes = blob_str.encode("utf-8")
+            field_val = context.get(field)
+            if isinstance(field_val, bytes):
+                return field_val != blob_bytes
+            return True
+
+        # Handle NOT IN
+        not_in_match = re.match(
+            r"(\w+)\s+NOT\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE
+        )
+        if not_in_match:
+            field = not_in_match.group(1)
+            values_str = not_in_match.group(2)
+            values = self._parse_value_list(values_str)
+            field_val = context.get(field)
+            return field_val not in values
+
+        # Handle IN
+        in_match = re.match(r"(\w+)\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE)
+        if in_match:
+            field = in_match.group(1)
+            values_str = in_match.group(2)
+            values = self._parse_value_list(values_str)
+            field_val = context.get(field)
+            return field_val in values
+
+        # Handle != and <>
+        neq_match = re.match(r"(\w+)\s*(?:!=|<>)\s*(.+)", condition, re.IGNORECASE)
+        if neq_match:
+            field = neq_match.group(1)
+            value = self._parse_literal(neq_match.group(2).strip())
+            field_val = context.get(field)
+            return field_val != value
+
+        # Handle >=
+        gte_match = re.match(r"(\w+)\s*>=\s*(.+)", condition)
+        if gte_match:
+            field = gte_match.group(1)
+            value = self._parse_literal(gte_match.group(2).strip())
+            field_val = context.get(field)
+            if field_val is not None and value is not None:
+                return field_val >= value
+            return False
+
+        # Handle <=
+        lte_match = re.match(r"(\w+)\s*<=\s*(.+)", condition)
+        if lte_match:
+            field = lte_match.group(1)
+            value = self._parse_literal(lte_match.group(2).strip())
+            field_val = context.get(field)
+            if field_val is not None and value is not None:
+                return field_val <= value
+            return False
+
+        # Handle >
+        gt_match = re.match(r"(\w+)\s*>\s*(.+)", condition)
+        if gt_match:
+            field = gt_match.group(1)
+            value = self._parse_literal(gt_match.group(2).strip())
+            field_val = context.get(field)
+            if field_val is not None and value is not None:
+                return field_val > value
+            return False
+
+        # Handle <
+        lt_match = re.match(r"(\w+)\s*<\s*(.+)", condition)
+        if lt_match:
+            field = lt_match.group(1)
+            value = self._parse_literal(lt_match.group(2).strip())
+            field_val = context.get(field)
+            if field_val is not None and value is not None:
+                return field_val < value
+            return False
+
+        # Handle =
+        eq_match = re.match(r"(\w+)\s*=\s*(.+)", condition)
+        if eq_match:
+            field = eq_match.group(1)
+            value = self._parse_literal(eq_match.group(2).strip())
+            field_val = context.get(field)
+            return field_val == value
+
+        # Default: include row
+        return True
+
+    def _parse_value_list(self, values_str: str) -> List[Any]:
+        """Parse a comma-separated list of values."""
+        values: List[Any] = []
+        for v in values_str.split(","):
+            values.append(self._parse_literal(v.strip()))
+        return values
+
+    def _parse_literal(self, literal: str) -> Any:
+        """Parse a literal value from string."""
+        literal = literal.strip()
+        # String literal
+        if (literal.startswith("'") and literal.endswith("'")) or (
+            literal.startswith('"') and literal.endswith('"')
+        ):
+            return literal[1:-1]
+        # Boolean
+        if literal.upper() == "TRUE":
+            return True
+        if literal.upper() == "FALSE":
+            return False
+        # NULL
+        if literal.upper() == "NULL":
+            return None
+        # Number
+        try:
+            if "." in literal:
+                return float(literal)
+            return int(literal)
+        except ValueError:
+            return literal
+
+    def _is_orm_id_query(self, statement: str) -> bool:
+        """Check if this is an ORM-style query with table.id in WHERE clause."""
+        upper = statement.upper()
+        # Check for patterns like "table.id = :param" in WHERE clause
+        return (
+            "SELECT" in upper
+            and ".ID" in upper
+            and "WHERE" in upper
+            and (":PK_" in upper or ":ID_" in upper or ".ID =" in upper)
+        )
+
+    def _execute_orm_id_query(self, statement: str, parameters: dict):
+        """Execute an ORM-style query by ID using direct key lookup."""
+        try:
+            parsed = parse_one(statement)
+            if not isinstance(parsed, exp.Select):
+                raise ProgrammingError("Expected SELECT statement")
+
+            # Get table name
+            from_arg = parsed.args.get("from") or parsed.args.get("from_")
+            if not from_arg:
+                raise ProgrammingError("Could not find FROM clause")
+            table_name = from_arg.this.name if hasattr(from_arg.this, "name") else str(from_arg.this)
+
+            # Extract column aliases from SELECT clause FIRST (before querying)
+            # This ensures we have description even when no entity is found
+            column_info = []
+            for expr in parsed.expressions:
+                if isinstance(expr, exp.Alias):
+                    alias = expr.alias
+                    if isinstance(expr.this, exp.Column):
+                        col_name = expr.this.name
+                    else:
+                        col_name = str(expr.this)
+                    column_info.append((col_name, alias))
+                elif isinstance(expr, exp.Column):
+                    col_name = expr.name
+                    column_info.append((col_name, col_name))
+                elif isinstance(expr, exp.Star):
+                    # SELECT * - we'll handle this after fetching entity
+                    column_info = None
+                    break
+
+            # Build description from column info (for non-SELECT * cases)
+            if column_info is not None:
+                field_names = [alias for _, alias in column_info]
+                self.description = [
+                    (name, None, None, None, None, None, None)
+                    for name in field_names
+                ]
+
+            # Extract ID from WHERE clause
+            where = parsed.args.get("where")
+            if not where:
+                raise ProgrammingError("Expected WHERE clause")
+
+            entity_key_id = self._extract_key_id_from_where(where, parameters)
+            if entity_key_id is None:
+                raise ProgrammingError("Could not extract key ID from WHERE")
+
+            # Fetch entity by key
+            key = self._datastore_client.key(table_name, entity_key_id)
+            entity = self._datastore_client.get(key)
+
+            if entity is None:
+                # No entity found - description is already set above
+                self._query_rows = iter([])
+                self.rowcount = 0
+                # For SELECT *, set empty description since we don't know the schema
+                if column_info is None:
+                    self.description = []
+                return
+
+            # Build result row
+            if column_info is None:
+                # SELECT * case
+                row_values = [entity.key.id]  # Add id first
+                field_names = ["id"]
+                for prop_name in sorted(entity.keys()):
+                    row_values.append(entity[prop_name])
+                    field_names.append(prop_name)
+                # Build description for SELECT *
+                self.description = [
+                    (name, None, None, None, None, None, None)
+                    for name in field_names
+                ]
+            else:
+                row_values = []
+                for col_name, alias in column_info:
+                    if col_name.lower() == "id":
+                        row_values.append(entity.key.id)
+                    else:
+                        row_values.append(entity.get(col_name))
+
+            self._query_rows = iter([tuple(row_values)])
+            self.rowcount = 1
+
+        except Exception as e:
+            logging.error(f"ORM ID query failed: {e}")
+            raise ProgrammingError(f"ORM ID query failed: {e}") from e
+
+    def _substitute_parameters(self, statement: str, parameters: dict) -> str:
+        """Substitute named parameters in SQL statement with their values."""
+        result = statement
+        for param_name, value in parameters.items():
+            # Build the placeholder pattern (e.g., :param_name)
+            placeholder = f":{param_name}"
+
+            # Format the value appropriately for GQL
+            if value is None:
+                formatted_value = "NULL"
+            elif isinstance(value, str):
+                # Escape single quotes in strings
+                escaped = value.replace("'", "''")
+                formatted_value = f"'{escaped}'"
+            elif isinstance(value, bool):
+                formatted_value = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                formatted_value = str(value)
+            elif isinstance(value, datetime):
+                # Format as ISO string for GQL
+                formatted_value = f"DATETIME('{value.isoformat()}')"
+            else:
+                # Default to string representation
+                formatted_value = f"'{str(value)}'"
+
+            result = result.replace(placeholder, formatted_value)
+
+        return result
+
+    def gql_query(self, statement, parameters=None, **kwargs):
+        """Execute a GQL query with support for aggregations."""
+
+        # Check for ORM-style queries with table.id in WHERE clause
+        if parameters and self._is_orm_id_query(statement):
+            self._execute_orm_id_query(statement, parameters)
+            return
+
+        # Substitute parameters if provided
+        if parameters:
+            statement = self._substitute_parameters(statement, parameters)
+
+        # Convert SQL to GQL-compatible format
+        gql_statement = self._convert_sql_to_gql(statement)
+        logging.debug(f"Converted GQL statement: {gql_statement}")
+
+        # Check if this is an aggregation query
+        if self._is_aggregation_query(statement):
+            self._execute_aggregation_query(statement, parameters)
+            return
+
+        # Check if we need client-side filtering
+        needs_filter = self._needs_client_side_filter(statement)
+        if needs_filter:
+            # Get base query without unsupported WHERE conditions
+            base_query = self._extract_base_query_for_filter(statement)
+            gql_statement = self._convert_sql_to_gql(base_query)
+
+        # Execute GQL query
+        response = self._execute_gql_request(gql_statement)
 
         if response.status_code == 200:
             data = response.json()
             logging.debug(data)
         else:
-            logging.debug("Error:", response.status_code, response.text)
+            logging.debug(f"Error: {response.status_code} {response.text}")
+            logging.debug(f"Original statement: {statement}")
+            logging.debug(f"GQL statement: {gql_statement}")
             raise OperationalError(
-                f"Failed to execute statement:{statement}"
+                f"GQL query failed: {gql_statement} (original: {statement})"
             )
-        
+
         self._query_data = iter([])
         self._query_rows = iter([])
         self.rowcount = 0
@@ -199,11 +1117,17 @@ class Cursor:
         is_select_statement = statement.upper().strip().startswith("SELECT")
 
         if is_select_statement:
-            self._closed = (
-                False  # For SELECT, cursor should remain open to fetch rows
-            )
+            self._closed = False  # For SELECT, cursor should remain open to fetch rows
 
-            rows, fields = ParseEntity.parse(data)
+            # Parse the SELECT statement to get column list
+            selected_columns = self._parse_select_columns(statement)
+
+            rows, fields = ParseEntity.parse(data, selected_columns)
+
+            # Apply client-side filtering if needed
+            if needs_filter:
+                rows = self._apply_client_side_filter(rows, fields, statement)
+
             fields = list(fields.values())
             self._query_data = iter(rows)
             self._query_rows = iter(rows)
@@ -216,18 +1140,111 @@ class Cursor:
             self.rowcount = affected_count
             self._closed = True
 
-    def execute_orm(self, statement: str, parameters=None, tokens: List[tokens.Token] = []):
+    def _execute_aggregation_query(self, statement: str, parameters=None):
+        """Execute an aggregation query with client-side aggregation."""
+        parsed = self._parse_aggregation_query(statement)
+        agg_functions = parsed["agg_functions"]
+        base_query = parsed["base_query"]
+
+        # If there's no base query and no functions, return empty
+        if not agg_functions:
+            self._query_rows = iter([])
+            self.rowcount = 0
+            self.description = []
+            return
+
+        # If there's no base query (e.g., SELECT COUNT(*) without FROM)
+        # Return a count of 0 or handle specially
+        if base_query is None:
+            # For kindless COUNT(*), we return 0 since we can't query all kinds
+            result_values: List[Any] = []
+            result_fields: Dict[str, Any] = {}
+            for func_name, col, alias in agg_functions:
+                if func_name == "COUNT":
+                    result_values.append(0)
+                elif func_name == "COUNT_UP_TO":
+                    result_values.append(0)
+                else:
+                    result_values.append(0)
+                result_fields[alias] = (alias, None, None, None, None, None, None)
+
+            self._query_rows = iter([tuple(result_values)])
+            self.rowcount = 1
+            self.description = list(result_fields.values())
+            return
+
+        # Check if the base query needs client-side filtering
+        needs_filter = self._needs_client_side_filter(base_query)
+        if needs_filter:
+            # Get base query without unsupported WHERE conditions
+            filter_query = self._extract_base_query_for_filter(base_query)
+            base_gql = self._convert_sql_to_gql(filter_query)
+        else:
+            base_gql = self._convert_sql_to_gql(base_query)
+
+        response = self._execute_gql_request(base_gql)
+
+        if response.status_code != 200:
+            logging.debug(f"Error: {response.status_code} {response.text}")
+            raise OperationalError(
+                f"Aggregation base query failed: {base_gql} (original: {statement})"
+            )
+
+        data = response.json()
+        entity_results = data.get("batch", {}).get("entityResults", [])
+
+        if len(entity_results) == 0:
+            # No data - return aggregations with 0 values
+            result_values = []
+            result_fields: Dict[str, Any] = {}
+            for func_name, _col, alias in agg_functions:
+                if func_name == "COUNT":
+                    result_values.append(0)
+                elif func_name == "COUNT_UP_TO":
+                    result_values.append(0)
+                elif func_name in ("SUM", "AVG"):
+                    result_values.append(0)
+                else:
+                    result_values.append(None)
+                result_fields[alias] = (alias, None, None, None, None, None, None)
+
+            self._query_rows = iter([tuple(result_values)])
+            self.rowcount = 1
+            self.description = list(result_fields.values())
+            return
+
+        # Parse the entity results
+        rows, fields = ParseEntity.parse(entity_results, None)
+
+        # Apply client-side filtering if needed
+        if needs_filter:
+            rows = self._apply_client_side_filter(rows, fields, base_query)
+
+        # Compute aggregations
+        agg_rows, agg_fields = self._compute_aggregations(rows, fields, agg_functions)
+
+        self._query_rows = iter(agg_rows)
+        self.rowcount = len(agg_rows)
+        self.description = list(agg_fields.values())
+
+    def execute_orm(
+        self, statement: str, parameters=None, tokens: List[tokens.Token] = []
+    ):
         if parameters is None:
             parameters = {}
 
-        logging.debug(f"[DataStore DBAPI] Executing ORM query: {statement} with parameters: {parameters}")
+        logging.debug(
+            f"[DataStore DBAPI] Executing ORM query: {statement} with parameters: {parameters}"
+        )
 
         statement = statement.replace("`", "'")
         parsed = parse_one(statement)
-        if not isinstance(parsed, exp.Select) or not parsed.args.get("from"):
+        # Note: sqlglot uses "from_" as the key, not "from"
+        from_arg = parsed.args.get("from") or parsed.args.get("from_")
+        if not isinstance(parsed, exp.Select) or not from_arg:
             raise ProgrammingError("Unsupported ORM query structure.")
 
-        from_clause = parsed.args["from"].this
+        from_clause = from_arg.this
         if not isinstance(from_clause, exp.Subquery):
             raise ProgrammingError("Expected a subquery in the FROM clause.")
 
@@ -250,28 +1267,59 @@ class Cursor:
             if isinstance(p, exp.Alias) and not p.find(exp.AggFunc):
                 # This is a simplified expression evaluator for computed columns.
                 # It converts "col" to col and leaves other things as is.
-                expr_str = re.sub(r'"(\w+)"', r'\1', p.this.sql())
+                expr_str = re.sub(r'"(\w+)"', r"\1", p.this.sql())
                 try:
                     # Use assign to add new columns based on expressions
-                    df = df.assign(**{p.alias: df.eval(expr_str, engine='python')})
+                    df = df.assign(**{p.alias: df.eval(expr_str, engine="python")})
                 except Exception as e:
                     logging.warning(f"Could not evaluate expression '{expr_str}': {e}")
 
         # 3. Apply outer query logic
         if parsed.args.get("group"):
             group_by_cols = [e.name for e in parsed.args.get("group").expressions]
-            col_renames = {} 
+
+            # Convert unhashable types (lists) to hashable types (tuples) for groupby
+            # Datastore keys are stored as lists, which pandas can't group by
+            converted_cols = {}
+            for col in group_by_cols:
+                if col in df.columns:
+                    # Check if any values are lists
+                    sample = df[col].dropna().head(1)
+                    if len(sample) > 0 and isinstance(sample.iloc[0], list):
+                        # Convert list to tuple for hashing
+                        converted_cols[col] = df[col].apply(
+                            lambda x: tuple(
+                                tuple(d.items()) if isinstance(d, dict) else d
+                                for d in x
+                            )
+                            if isinstance(x, list)
+                            else x
+                        )
+                        df[col] = converted_cols[col]
+
+            col_renames = {}
             for p in parsed.expressions:
                 if isinstance(p.this, exp.AggFunc):
-                    original_col_name = p.this.expressions[0].name if p.this.expressions else p.this.this.this.name 
-                    agg_func_name = p.this.key.lower() 
+                    original_col_name = (
+                        p.this.expressions[0].name
+                        if p.this.expressions
+                        else p.this.this.this.name
+                    )
+                    agg_func_name = p.this.key.lower()
                     desired_sql_alias = p.alias_or_name
                     col_renames = {"temp_agg": desired_sql_alias}
-                    df = df.groupby(group_by_cols).agg(temp_agg=(original_col_name, agg_func_name)).reset_index().rename(columns=col_renames)
-            
+                    df = (
+                        df.groupby(group_by_cols)
+                        .agg(temp_agg=(original_col_name, agg_func_name))
+                        .reset_index()
+                        .rename(columns=col_renames)
+                    )
+
         if parsed.args.get("order"):
             order_by_cols = [e.this.name for e in parsed.args["order"].expressions]
-            ascending = [not e.args.get("desc", False) for e in parsed.args["order"].expressions]
+            ascending = [
+                not e.args.get("desc", False) for e in parsed.args["order"].expressions
+            ]
             df = df.sort_values(by=order_by_cols, ascending=ascending)
 
         if parsed.args.get("limit"):
@@ -338,6 +1386,220 @@ class Cursor:
         except StopIteration:
             return None
 
+    def _parse_select_columns(self, statement: str) -> Optional[List[str]]:
+        """
+        Parse SELECT statement to extract column names.
+        Returns None for SELECT * (all columns)
+        """
+        try:
+            # Use sqlglot to parse the statement
+            parsed = parse_one(statement)
+            if not isinstance(parsed, exp.Select):
+                return None
+
+            columns = []
+            for expr in parsed.expressions:
+                if isinstance(expr, exp.Star):
+                    # SELECT * - return None to indicate all columns
+                    return None
+                elif isinstance(expr, exp.Column):
+                    # Direct column reference
+                    col_name = expr.name
+                    # Map 'id' to '__key__' since Datastore uses keys, not id properties
+                    if col_name.lower() == "id":
+                        col_name = "__key__"
+                    columns.append(col_name)
+                elif isinstance(expr, exp.Alias):
+                    # Column with alias
+                    if isinstance(expr.this, exp.Column):
+                        col_name = expr.this.name
+                        columns.append(col_name)
+                    else:
+                        # For complex expressions, use the alias
+                        columns.append(expr.alias)
+                else:
+                    # For other expressions, try to get the name or use the string representation
+                    col_name = expr.alias_or_name
+                    if col_name:
+                        columns.append(col_name)
+
+            return columns if columns else None
+        except Exception:
+            # If parsing fails, return None to get all columns
+            return None
+
+    def _convert_sql_to_gql(self, statement: str) -> str:
+        """
+        Convert SQL statements to GQL-compatible format.
+
+        GQL (Google Query Language) is similar to SQL but has its own syntax.
+        This method should preserve GQL syntax and only make minimal transformations.
+        We avoid using sqlglot parsing here because it transforms GQL-specific
+        syntax incorrectly (e.g., COUNT(*) -> COUNT("*"), != -> <>).
+        """
+        # AGGREGATE queries are valid GQL - pass through directly
+        if statement.strip().upper().startswith("AGGREGATE"):
+            return statement
+
+        # Handle LIMIT FIRST(offset, count) syntax
+        # Convert to LIMIT <count> OFFSET <offset>
+        first_match = re.search(
+            r"LIMIT\s+FIRST\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        if first_match:
+            offset = first_match.group(1)
+            count = first_match.group(2)
+            statement = re.sub(
+                r"LIMIT\s+FIRST\s*\(\s*\d+\s*,\s*\d+\s*\)",
+                f"LIMIT {count} OFFSET {offset}",
+                statement,
+                flags=re.IGNORECASE,
+            )
+
+        # Extract table name from FROM clause for KEY() conversion
+        table_match = re.search(
+            r"\bFROM\s+(\w+)", statement, flags=re.IGNORECASE
+        )
+        table_name = table_match.group(1) if table_match else None
+
+        # Remove DISTINCT ON (...) syntax - not supported by GQL.
+        # GQL supports DISTINCT but not DISTINCT ON.
+        statement = re.sub(
+            r"\bDISTINCT\s+ON\s*\([^)]*\)\s*",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # Convert table.id in SELECT clause to __key__
+        # Pattern: table.id AS alias -> __key__ AS alias
+        if table_name:
+            statement = re.sub(
+                rf"\b{table_name}\.id\b",
+                "__key__",
+                statement,
+                flags=re.IGNORECASE,
+            )
+
+        # Handle bare 'id' references for GQL compatibility
+        # GQL doesn't support mixing __key__ with property projections in SELECT,
+        # so remove id/__key__ from the SELECT column list. The key is always
+        # included in the entity response metadata and handled by ParseEntity.
+        upper_stmt = statement.upper()
+        from_pos = upper_stmt.find(" FROM ")
+        if from_pos > 0:
+            select_clause = statement[:from_pos]
+            from_and_rest = statement[from_pos:]
+
+            # Parse SELECT columns and remove id/__key__ from projection
+            select_match = re.match(
+                r"(SELECT\s+(?:DISTINCT\s+(?:ON\s*\([^)]*\)\s*)?)?)(.*)",
+                select_clause,
+                flags=re.IGNORECASE,
+            )
+            if select_match:
+                prefix = select_match.group(1)
+                cols_str = select_match.group(2)
+                cols = [c.strip() for c in cols_str.split(",")]
+                non_key_cols = [
+                    c
+                    for c in cols
+                    if not re.match(
+                        r"^(id|__key__)$", c.strip(), flags=re.IGNORECASE
+                    )
+                ]
+
+                if not non_key_cols:
+                    # id/__key__ is the only column -> keys-only query
+                    select_clause = prefix + "__key__"
+                elif len(non_key_cols) < len(cols):
+                    # id/__key__ mixed with other columns -> remove it
+                    select_clause = prefix + ", ".join(non_key_cols)
+
+            # Convert 'id' to '__key__' in WHERE/ORDER BY/etc.
+            from_and_rest = re.sub(
+                r"\bid\b", "__key__", from_and_rest, flags=re.IGNORECASE
+            )
+
+            statement = select_clause + from_and_rest
+        else:
+            statement = re.sub(
+                r"\bid\b", "__key__", statement, flags=re.IGNORECASE
+            )
+
+        # Datastore restriction: properties in equality (=) filters cannot be
+        # projected. When this conflict exists, use SELECT * instead and let
+        # ParseEntity handle column filtering from the full entity response.
+        upper_check = statement.upper()
+        from_check_pos = upper_check.find(" FROM ")
+        where_check_pos = upper_check.find(" WHERE ")
+        if from_check_pos > 0 and where_check_pos > from_check_pos:
+            select_cols_str = re.sub(
+                r"^SELECT\s+", "", statement[:from_check_pos], flags=re.IGNORECASE
+            ).strip()
+            if (
+                select_cols_str != "*"
+                and select_cols_str.upper() != "__KEY__"
+                and not select_cols_str.upper().startswith("DISTINCT")
+            ):
+                projected = {c.strip().lower() for c in select_cols_str.split(",")}
+                where_part = statement[where_check_pos + 7:]
+                eq_cols = {
+                    m.lower()
+                    for m in re.findall(
+                        r"\b(\w+)\s*(?<![><!])=(?![=>])", where_part
+                    )
+                }
+                if projected & eq_cols:
+                    statement = "SELECT * " + statement[from_check_pos + 1:]
+
+        # Also handle just "id" column references in WHERE clauses
+        # Pattern: WHERE ... id = <value> -> WHERE ... __key__ = KEY('table', <value>)
+        if table_name:
+            # Match WHERE id = <number>
+            id_where_match = re.search(
+                r"\bWHERE\b.*\b(?:id|__key__)\s*=\s*(\d+)",
+                statement,
+                flags=re.IGNORECASE,
+            )
+            if id_where_match:
+                id_value = id_where_match.group(1)
+                # Replace the WHERE condition with KEY() syntax
+                # Note: GQL KEY() expects unquoted table name
+                statement = re.sub(
+                    r"\b(?:id|__key__)\s*=\s*\d+",
+                    f"__key__ = KEY({table_name}, {id_value})",
+                    statement,
+                    flags=re.IGNORECASE,
+                )
+
+        # Remove column aliases (AS alias_name) - GQL doesn't support them
+        # Pattern: column AS alias -> column
+        statement = re.sub(
+            r"\bAS\s+\w+", "", statement, flags=re.IGNORECASE
+        )
+
+        # Remove table prefix from column names (table.column -> column)
+        # But preserve __key__ and KEY() function
+        if table_name:
+            statement = re.sub(
+                rf"\b{table_name}\.(?!__)", "", statement, flags=re.IGNORECASE
+            )
+
+        # Clean up extra spaces
+        statement = re.sub(r"\s+", " ", statement).strip()
+        statement = re.sub(r",\s*,", ",", statement)  # Remove empty commas
+        statement = re.sub(r"\s*,\s*\bFROM\b", " FROM", statement)  # Clean comma before FROM
+
+        # GQL queries should be passed through as-is
+        # GQL supports: SELECT, FROM, WHERE, ORDER BY, LIMIT, OFFSET, DISTINCT
+        # GQL-specific: KEY(), DATETIME(), BLOB(), ARRAY(), PROJECT(), NAMESPACE()
+        # GQL-specific: HAS ANCESTOR, HAS DESCENDANT, CONTAINS
+        # GQL-specific: __key__
+        return statement
+
     def close(self):
         self._closed = True
         self.connection = None
@@ -368,56 +1630,138 @@ class Connection:
 def connect(client=None):
     return Connection(client)
 
-class ParseEntity:
 
+class ParseEntity:
     @classmethod
-    def parse(cls, data: dict):
+    def parse(cls, data: dict, selected_columns: Optional[List[str]] = None):
         """
         Parse the datastore entity
 
         dict is a json base entity
+        selected_columns: List of column names to include in results. If None, include all.
         """
         all_property_names_set = set()
         for entity_data in data:
             properties = entity_data.get("entity", {}).get("properties", {})
             all_property_names_set.update(properties.keys())
 
-        # sort by names
-        sorted_property_names = sorted(list(all_property_names_set))
-        FieldDict = dict
+        # Determine which columns to include
+        if selected_columns is None:
+            # Include all properties if no specific selection
+            sorted_property_names = sorted(list(all_property_names_set))
+            include_key = True
+        else:
+            # Only include selected columns
+            sorted_property_names = []
+            include_key = False
+            for col in selected_columns:
+                if col.lower() == "__key__" or col.lower() == "key":
+                    include_key = True
+                elif col in all_property_names_set:
+                    sorted_property_names.append(col)
 
-        final_fields: FieldDict[str, Tuple] = FieldDict()
+        final_fields: dict = {}
         final_rows: List[Tuple] = []
 
-        # Add key fields, always the first fields
-        final_fields["key"] = ("key", None, None, None, None, None, None) # None for type initially
+        # Add key field if requested
+        if include_key:
+            final_fields["key"] = ("key", None, None, None, None, None, None)
 
-        # Add other fields
-        for prop_name in sorted_property_names:
-            final_fields[prop_name] = (prop_name, None, None, None, None, None, None)
+        # Add selected fields in the order they appear in selected_columns if provided
+        if selected_columns:
+            # Keep the order from selected_columns
+            for prop_name in selected_columns:
+                if (
+                    prop_name.lower() != "__key__"
+                    and prop_name.lower() != "key"
+                    and prop_name in all_property_names_set
+                ):
+                    final_fields[prop_name] = (
+                        prop_name,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+        else:
+            # Add all fields sorted by name
+            for prop_name in sorted_property_names:
+                final_fields[prop_name] = (
+                    prop_name,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
 
         # Append the properties
         for entity_data in data:
             row_values: List[Any] = []
-            
             properties = entity_data.get("entity", {}).get("properties", {})
             key = entity_data.get("entity", {}).get("key", {})
-            # add key fileds 
-            row_values.append(key.get("path", []))
 
-            # Append other properties according to the sorted properties
-            for prop_name in sorted_property_names:
-                prop_v = properties.get(prop_name)
+            # Add key value if requested
+            if include_key:
+                row_values.append(key.get("path", []))
 
-                if prop_v is not None:
-                    prop_value, prop_type = ParseEntity.parse_properties(prop_name, prop_v)
-                    row_values.append(prop_value)
-                    current_field_info = final_fields[prop_name]
-                    if current_field_info[1] is None or current_field_info[1] == "UNKNOWN":
-                        final_fields[prop_name] = (prop_name, prop_type, current_field_info[2], current_field_info[3], current_field_info[4], current_field_info[5], current_field_info[6])
-                else:
-                    row_values.append(None)
-            
+            # Append selected properties in the correct order
+            if selected_columns:
+                for prop_name in selected_columns:
+                    if prop_name.lower() == "__key__" or prop_name.lower() == "key":
+                        continue  # already added above
+                    if prop_name in all_property_names_set:
+                        prop_v = properties.get(prop_name)
+                        if prop_v is not None:
+                            prop_value, prop_type = ParseEntity.parse_properties(
+                                prop_name, prop_v
+                            )
+                            row_values.append(prop_value)
+                            current_field_info = final_fields[prop_name]
+                            if (
+                                current_field_info[1] is None
+                                or current_field_info[1] == "UNKNOWN"
+                            ):
+                                final_fields[prop_name] = (
+                                    prop_name,
+                                    prop_type,
+                                    current_field_info[2],
+                                    current_field_info[3],
+                                    current_field_info[4],
+                                    current_field_info[5],
+                                    current_field_info[6],
+                                )
+                        else:
+                            row_values.append(None)
+            else:
+                # Append all properties in sorted order
+                for prop_name in sorted_property_names:
+                    prop_v = properties.get(prop_name)
+                    if prop_v is not None:
+                        prop_value, prop_type = ParseEntity.parse_properties(
+                            prop_name, prop_v
+                        )
+                        row_values.append(prop_value)
+                        current_field_info = final_fields[prop_name]
+                        if (
+                            current_field_info[1] is None
+                            or current_field_info[1] == "UNKNOWN"
+                        ):
+                            final_fields[prop_name] = (
+                                prop_name,
+                                prop_type,
+                                current_field_info[2],
+                                current_field_info[3],
+                                current_field_info[4],
+                                current_field_info[5],
+                                current_field_info[6],
+                            )
+                    else:
+                        row_values.append(None)
+
             final_rows.append(tuple(row_values))
 
         return final_rows, final_fields
@@ -426,6 +1770,7 @@ class ParseEntity:
     def parse_properties(cls, prop_k: str, prop_v: dict):
         value_type = next(iter(prop_v), None)
         prop_type = None
+        prop_value: Any = None
 
         if value_type == "nullValue" or "nullValue" in prop_v:
             prop_value = None
@@ -443,10 +1788,17 @@ class ParseEntity:
             prop_value = prop_v["stringValue"]
             prop_type = _types.STRING
         elif value_type == "timestampValue" or "timestampValue" in prop_v:
-            prop_value = datetime.fromisoformat(prop_v["timestampValue"])
+            timestamp_str = prop_v["timestampValue"]
+            if timestamp_str.endswith("Z"):
+                # Handle ISO 8601 with Z suffix (UTC)
+                prop_value = datetime.fromisoformat(
+                    timestamp_str.replace("Z", "+00:00")
+                )
+            else:
+                prop_value = datetime.fromisoformat(timestamp_str)
             prop_type = _types.TIMESTAMP
         elif value_type == "blobValue" or "blobValue" in prop_v:
-            prop_value = base64.b64decode(prop_v.get("blobValue", b''))
+            prop_value = base64.b64decode(prop_v.get("blobValue", b""))
             prop_type = _types.BYTES
         elif value_type == "geoPointValue" or "geoPointValue" in prop_v:
             prop_value = prop_v["geoPointValue"]

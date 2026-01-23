@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -16,13 +16,15 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+from sqlalchemy import ARRAY, BINARY, FLOAT, JSON, Boolean, Column, Integer, String
+
 from . import Base
-from sqlalchemy import Column, Integer, String, JSON, Boolean, ARRAY, FLOAT, BINARY
+
 
 class Task(Base):
 
     __tablename__ = "tasks"
-    id = Column(Integer, primary_key=True, autoincrement=True) 
+    id = Column(Integer, primary_key=True, autoincrement=True)
     task = Column(String)
     content = Column(JSON)
     is_done = Column(Boolean)

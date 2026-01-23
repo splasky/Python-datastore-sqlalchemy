@@ -62,6 +62,10 @@ class CloudDatastoreDialect(default.DefaultDialect):
     returns_unicode_strings = True
     description_encoding = None
 
+    # JSON support - required for SQLAlchemy JSON type
+    _json_serializer = None
+    _json_deserializer = None
+
     paramstyle = "named"
 
     def __init__(
@@ -256,13 +260,13 @@ class CloudDatastoreDialect(default.DefaultDialect):
     def do_execute(
         self,
         cursor,
-        # cursor: DBAPICursor, TODO: Uncomment when superset allow sqlalchemy version >= 2.0 
+        # cursor: DBAPICursor, TODO: Uncomment when superset allow sqlalchemy version >= 2.0
         statement: str,
-        # parameters: Optional[], TODO: Uncomment when superset allow sqlalchemy version >= 2.0 
+        # parameters: Optional[], TODO: Uncomment when superset allow sqlalchemy version >= 2.0
         parameters,
         context: Optional[ExecutionContext] = None,
     ) -> None:
-        cursor.execute(statement)
+        cursor.execute(statement, parameters)
 
     def get_view_names(
         self, connection: Connection, schema: str | None = None, **kw: Any
