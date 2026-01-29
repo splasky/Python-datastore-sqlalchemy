@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    env:
+      DATASTORE_EMULATOR_HOST: "localhost:8081"
 
     steps:
     - name: Checkout code
@@ -19,13 +22,25 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
-    
+
+    - name: Set up Java (required for Datastore emulator)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
     - name: 'Set up Cloud SDK'
       uses: 'google-github-actions/setup-gcloud@v2'
       with:
-        install_components: 'cloud-datastore-emulator'
+        install_components: 'beta,cloud-datastore-emulator'
 
-    - name: 'Use gcloud CLI'
+    - name: 'Verify gcloud setup'
+      run: |
+        gcloud --version
+        which gcloud
+        gcloud components list --filter="id:cloud-datastore-emulator" --format="table(id,state.name)"
+
+    - name: 'Configure gcloud project'
       run: 'gcloud config set project python-datastore-sqlalchemy'
 
     - name: Install dependencies
