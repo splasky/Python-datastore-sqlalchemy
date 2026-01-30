@@ -271,7 +271,6 @@ def test_datasets(datastore_client):
 def engine(test_datasets):
     os.environ["DATASTORE_EMULATOR_HOST"] = "localhost:8081"
     engine = create_engine(f"datastore://{TEST_PROJECT}", echo=True)
-    # Base.metadata.create_all(engine)  # Create tables (kinds) - Not needed for Datastore
     return engine
 
 
