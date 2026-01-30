@@ -21,5 +21,5 @@ print(result.fetchall())
 ## How to contribute
 Feel free to open issues and pull requests on github.
 
-## References
-- [Develop a SQLAlchemy dialects](https://hackmd.io/lsBW5GCVR82SORyWZ1cssA?view)
+## Development Notes
+- [Develop a SQLAlchemy and it's dialects](https://hackmd.io/lsBW5GCVR82SORyWZ1cssA?view)
