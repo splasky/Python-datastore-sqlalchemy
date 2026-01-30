@@ -1,4 +1,4 @@
-# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com> 
+# Copyright (c) 2025 hychang <hychang.1997.tw@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -16,33 +16,33 @@
 # COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-import pytest
+import logging
 import os
+import shutil
 import signal
 import subprocess
-import shutil
-import requests
 import time
-import logging
 from datetime import datetime, timezone
+
+import pytest
+import requests
 from google.cloud import datastore
 from google.cloud.datastore.helpers import GeoPoint
-
-from sqlalchemy.dialects import registry
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import registry
 from sqlalchemy.orm import sessionmaker
-from models import Base
 
 registry.register("datastore", "sqlalchemy_datastore", "CloudDatastoreDialect")
 
 TEST_PROJECT = "python-datastore-sqlalchemy"
 
+
 # Fixture example (add this to your conftest.py)
 @pytest.fixture
-def conn():
+def conn(test_datasets):
     """Database connection fixture - implement according to your setup"""
-    os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
-    engine = create_engine(f'datastore://{TEST_PROJECT}', echo=True)
+    os.environ["DATASTORE_EMULATOR_HOST"] = "localhost:8081"
+    engine = create_engine(f"datastore://{TEST_PROJECT}", echo=True)
     conn = engine.connect()
     return conn
 
@@ -61,17 +61,20 @@ def datastore_client():
         gcloud_path = shutil.which("gcloud")
 
     if not gcloud_path:
-        pytest.skip("gcloud not found in PATH (or GCLOUD_PATH not set); skipping datastore emulator tests.")
+        pytest.skip(
+            "gcloud not found in PATH (or GCLOUD_PATH not set); skipping datastore emulator tests."
+        )
 
     # Start the emulator.
     os.environ["DATASTORE_EMULATOR_HOST"] = "localhost:8081"
-    result = subprocess.Popen(
+    result = subprocess.Popen(  # noqa: S603
         [
-            "gcloud",
+            gcloud_path,
             "beta",
             "emulators",
             "datastore",
             "start",
+            "--host-port=localhost:8081",
             "--no-store-on-disk",
             "--quiet",
         ]
@@ -81,7 +84,9 @@ def datastore_client():
     while True:
         time.sleep(1)
         try:
-            requests.get(f"http://{os.environ['DATASTORE_EMULATOR_HOST']}/")
+            requests.get(
+                f"http://{os.environ['DATASTORE_EMULATOR_HOST']}/", timeout=10
+            )
             break
         except requests.exceptions.ConnectionError:
             logging.info("Waiting for emulator to spin up...")
@@ -100,10 +105,13 @@ def datastore_client():
         os.kill(result.pid, signal.SIGKILL)
 
     # Teardown Reset the emulator.
-    requests.post(f"http://{os.environ['DATASTORE_EMULATOR_HOST']}/reset")
+    requests.post(
+        f"http://{os.environ['DATASTORE_EMULATOR_HOST']}/reset", timeout=10
+    )
 
     # Clear the environment variables.
     del os.environ["DATASTORE_EMULATOR_HOST"]
+
 
 def clear_existing_data(client):
     for kind in ["users", "tasks", "assessment"]:
@@ -112,23 +120,26 @@ def clear_existing_data(client):
         if keys:
             client.delete_multi(keys)
 
+
 @pytest.fixture(scope="session", autouse=True)
 def test_datasets(datastore_client):
     client = datastore_client
     clear_existing_data(client)
 
     # user1
-    user1 = datastore.Entity(client.key("users"))
+    user1 = datastore.Entity(client.key("users", "Elmerulia Frixell_id"))
     user1["name"] = "Elmerulia Frixell"
     user1["age"] = 16
     user1["country"] = "Arland"
     user1["create_time"] = datetime(2025, 1, 1, 1, 2, 3, 4, tzinfo=timezone.utc)
-    user1["description"] = "An aspiring alchemist and daughter of Rorona, aiming to surpass her mother and become the greatest alchemist in Arland. Cheerful, hardworking, and full of curiosity."
+    user1["description"] = (
+        "An aspiring alchemist and daughter of Rorona, aiming to surpass her mother and become the greatest alchemist in Arland. Cheerful, hardworking and full of curiosity."
+    )
     user1["settings"] = None
     user1["tags"] = "user"
 
     # user2
-    user2 = datastore.Entity(client.key("users"))
+    user2 = datastore.Entity(client.key("users", "Virginia Robertson_id"))
     user2["name"] = "Virginia Robertson"
     user2["age"] = 14
     user2["country"] = "Britannia"
@@ -143,7 +154,7 @@ def test_datasets(datastore_client):
     user2["tags"] = "user"
 
     # user3
-    user3 = datastore.Entity(client.key("users"))
+    user3 = datastore.Entity(client.key("users", "Travis Ghost Hayes_id"))
     user3["name"] = "Travis 'Ghost' Hayes"
     user3["age"] = 28
     user3["country"] = "Los Santos, San Andreas"
@@ -173,11 +184,13 @@ def test_datasets(datastore_client):
     task1["task"] = "Collect Sea Urchins in Atelier"
     task1["content"] = {"description": "採集高品質海膽"}
     task1["is_done"] = False
-    task1["tag"] = "house"
+    task1["tag"] = "House"
     task1["location"] = GeoPoint(25.047472, 121.517167)
     task1["assign_user"] = user1.key
     task1["reward"] = 22000.5
     task1["equipment"] = ["bomb", "healing salve", "nectar"]
+    task1["hours"] = 1
+    task1["property"] = 1
 
     secret_recipe_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\xda\xed\xc1\x01\x01\x00\x00\x00\xc2\xa0\xf7Om\x00\x00\x00\x00IEND\xaeB`\x82"
     task1["encrypted_formula"] = secret_recipe_bytes
@@ -200,15 +213,17 @@ def test_datasets(datastore_client):
     task2["equipment"] = ["Magic Antenna", "Moffy", "AT-6 Texan "]
     task2["additional_notes"] = None
     task2["encrypted_formula"] = b"\x00\x00\x00\x00"
+    task2["hours"] = 2
+    task1["property"] = 2
 
-    ## task3 
+    ## task3
     task3 = datastore.Entity(client.key("tasks"))
     task3["task"] = (
         "Successful hostage rescue, defeating the kidnappers, with survival ensured"
     )
     task3["content"] = {
         "description": "Successful hostage rescue, defeating the kidnappers, with survival ensured",
-        "important": "You need to bring your own weapons🔫, ammunition and vehicles 🚗"
+        "important": "You need to bring your own weapons🔫, ammunition and vehicles 🚗",
     }
     task3["is_done"] = False
     task3["tag"] = "Apartment"
@@ -218,6 +233,8 @@ def test_datasets(datastore_client):
     task3["equipment"] = ["A 20-year-old used pickup truck.", "AR-16"]
     task3["additional_notes"] = None
     task3["encrypted_formula"] = b"\x00\x00\x00\x00"
+    task3["hours"] = 3
+    task3["property"] = 3
 
     with client.batch() as batch:
         batch.put(task1)
@@ -228,19 +245,19 @@ def test_datasets(datastore_client):
     # Wait for batch complete
     while True:
         time.sleep(1)
-        query =  client.query(kind="users")
+        query = client.query(kind="users")
         users = list(query.fetch())
         if len(users) == 3:
             break
 
-    query =  client.query(kind="users")
+    query = client.query(kind="users")
     users = list(query.fetch())
     assert len(users) == 3
 
     # Wait for batch complete
     while True:
         time.sleep(1)
-        query =  client.query(kind="tasks")
+        query = client.query(kind="tasks")
         tasks = list(query.fetch())
         if len(tasks) == 3:
             break
@@ -249,17 +266,19 @@ def test_datasets(datastore_client):
     tasks = list(query.fetch())
     assert len(tasks) == 3
 
+
 @pytest.fixture(scope="session")
-def engine():
-    os.environ["DATASTORE_EMULATOR_HOST"]="localhost:8081"
+def engine(test_datasets):
+    os.environ["DATASTORE_EMULATOR_HOST"] = "localhost:8081"
     engine = create_engine(f"datastore://{TEST_PROJECT}", echo=True)
-    Base.metadata.create_all(engine)  # Create tables (kinds)
+    # Base.metadata.create_all(engine)  # Create tables (kinds) - Not needed for Datastore
     return engine
+
 
 @pytest.fixture(scope="function")
 def session(engine):
-    Session = sessionmaker(bind=engine)
-    sess = Session()
+    session_factory = sessionmaker(bind=engine)
+    sess = session_factory()
     yield sess
     sess.rollback()  # For test isolation
     sess.close()

@@ -1,0 +1,21 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "C", "G", "S"]
+ignore = [
+    "E501",  # Line too long - allow longer lines for SQL strings in tests
+    "S608",  # SQL injection - intentional for test cases
+    "B007",  # Loop variable not used - common in test assertions
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S608", "E501", "S101", "B007", "S603"]
+
+[tool.mypy]
+ignore_missing_imports = true
+disable_error_code = ["var-annotated", "import-untyped"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "sqlalchemy_datastore.*"]
+ignore_errors = true
