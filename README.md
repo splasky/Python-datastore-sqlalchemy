@@ -4,7 +4,7 @@ How to install
 ```
 python3 setup.py install
 ```
-SQLAlchemy
+How to use
 ```python
 from sqlalchemy import *
 from sqlalchemy.engine import create_engine
