@@ -18,8 +18,11 @@ print(result.fetchall())
 ## Preview
 <img src="assets/pie.png">
 
+> [!WARNING]
+> Please note: Not all GQL and SQL syntax has been fully tested. Should you encounter any bugs, please post the relevant query and open an issue on GitHub.
+
 ## How to contribute
-Feel free to open issues and pull requests on github.
+Feel free to open issues and pull requests on GitHub.
 
 ## Development Notes
 - [Develop a SQLAlchemy and it's dialects](https://hackmd.io/lsBW5GCVR82SORyWZ1cssA?view)
