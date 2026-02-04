@@ -18,9 +18,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 # GQL test reference from: https://cloud.google.com/datastore/docs/reference/gql_reference#grammar
-import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
 
 
 class TestGQLBasicQueries:
@@ -921,27 +919,35 @@ class TestGQLDateTimeLiterals:
         assert len(data) == 2, "Expected 2 users with create_time matching 4μs (user1 and user2)"
 
     def test_datetime_with_timezone_offset(self, conn):
-        """Test DATETIME with timezone offset - emulator doesn't support +00:00 format"""
-        with pytest.raises(OperationalError):
-            conn.execute(
-                text(
-                    "SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03.00004+00:00')"
-                )
+        """Test DATETIME with timezone offset - falls back to client-side filtering"""
+        result = conn.execute(
+            text(
+                "SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03.00004+00:00')"
             )
+        )
+        data = result.all()
+        # 40μs doesn't match any user (user1/user2 have 4μs), so 0 results
+        assert len(data) == 0
 
     def test_datetime_microseconds(self, conn):
-        """Test DATETIME with microseconds - emulator doesn't support +00:00 format"""
-        with pytest.raises(OperationalError):
-            conn.execute(
-                text(
-                    "SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03.4+00:00')"
-                )
+        """Test DATETIME with microseconds - falls back to client-side filtering"""
+        result = conn.execute(
+            text(
+                "SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03.4+00:00')"
             )
+        )
+        data = result.all()
+        # 400000μs doesn't match any user (user1/user2 have 4μs), so 0 results
+        assert len(data) == 0
 
     def test_datetime_without_microseconds(self, conn):
-        """Test DATETIME without microseconds - emulator doesn't support +00:00 format"""
-        with pytest.raises(OperationalError):
-            conn.execute(text("SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03+00:00')"))
+        """Test DATETIME without microseconds - falls back to client-side filtering"""
+        result = conn.execute(
+            text("SELECT * FROM users WHERE create_time = DATETIME('2025-01-01T01:02:03+00:00')")
+        )
+        data = result.all()
+        # 0μs doesn't match any user (user1/user2 have 4μs), so 0 results
+        assert len(data) == 0
 
 
 class TestGQLOperatorBehavior:
