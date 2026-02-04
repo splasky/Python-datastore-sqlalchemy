@@ -19,7 +19,6 @@
 
 import sqlalchemy.types
 import sqlalchemy.util
-
 from google.cloud.bigquery.schema import SchemaField
 
 _type_map = {
@@ -40,7 +39,7 @@ _type_map = {
     "STRUCT": sqlalchemy.types.JSON,
     "TIMESTAMP": sqlalchemy.types.TIMESTAMP,
     "TIME": sqlalchemy.types.TIME,
-    "GEOGRAPHY": sqlalchemy.types.ARRAY,
+    "GEOGRAPHY": sqlalchemy.types.JSON,
     "NULL": sqlalchemy.types.NullType,
     "KEY": sqlalchemy.types.JSON
 }
@@ -63,22 +62,22 @@ STRING = _type_map["STRING"]
 TIMESTAMP = _type_map["TIMESTAMP"]
 TIME = _type_map["TIME"]
 GEOPOINT = _type_map["GEOGRAPHY"]
-STRUCT_FIELD_TYPES = _type_map["STRUCT"] 
-RECORD_FIELD_TYPES = _type_map["RECORD"] 
+STRUCT_FIELD_TYPES = _type_map["STRUCT"]
+RECORD_FIELD_TYPES = _type_map["RECORD"]
 NULL_TYPE = _type_map["NULL"]
 KEY_TYPE = _type_map["KEY"]
 
 _property_type = {
-    "Date/Time": DATETIME,
-    "GeoPt": GEOPOINT,
-    "Integer": INTEGER,
-    "Key": KEY_TYPE,
-    "Blob": BYTES,
-    "Boolean": BOOLEAN,
-    "EmbeddedEntity": STRUCT_FIELD_TYPES,
-    "Float": FLOAT,
-    "NULL": NULL_TYPE,
-    "String": STRING
+    "Date/Time": DATETIME(),
+    "GeoPt": GEOPOINT(),
+    "Integer": INTEGER(),
+    "Key": KEY_TYPE(),
+    "Blob": BYTES(),
+    "Boolean": BOOLEAN(),
+    "EmbeddedEntity": STRUCT_FIELD_TYPES(),
+    "Float": FLOAT(),
+    "NULL": NULL_TYPE(),
+    "String": STRING(),
 }
 
 
