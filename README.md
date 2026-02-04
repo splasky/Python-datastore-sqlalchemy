@@ -4,6 +4,10 @@ How to install
 ```
 python3 setup.py install
 ```
+or
+```
+pip install python-datastore-sqlalchemy
+```
 How to use
 ```python
 from sqlalchemy import *
