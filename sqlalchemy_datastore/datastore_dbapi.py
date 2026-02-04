@@ -1595,38 +1595,83 @@ class Cursor:
                 except Exception as e:
                     logging.warning(f"Could not evaluate expression '{expr_str}': {e}")
 
-        # 3. Apply outer query logic
-        if parsed.args.get("group"):
-            group_by_cols = [e.name for e in parsed.args.get("group").expressions]
+        # 3. Apply outer query logic (aggregations and GROUP BY)
+        has_agg = any(
+            isinstance(p, exp.Alias) and p.find(exp.AggFunc)
+            for p in parsed.expressions
+        )
 
-            # Convert unhashable types (lists) to hashable types (tuples) for groupby
-            # Datastore keys are stored as lists, which pandas can't group by
+        if parsed.args.get("group"):
+            group_by_cols = []
+            for e in parsed.args.get("group").expressions:
+                col_name = e.name if hasattr(e, "name") else ""
+                if col_name and col_name in df.columns:
+                    group_by_cols.append(col_name)
+                else:
+                    # Function expression (e.g. DATETIME_TRUNC) — find
+                    # the matching alias in the SELECT clause.
+                    expr_sql = e.sql()
+                    matched = False
+                    for p in parsed.expressions:
+                        if isinstance(p, exp.Alias) and p.this.sql() == expr_sql:
+                            group_by_cols.append(p.alias)
+                            matched = True
+                            break
+                    if not matched:
+                        group_by_cols.append(col_name)
+
+            # Convert unhashable types (lists, dicts) to hashable types for groupby.
+            # Datastore keys are stored as lists of dicts, GeoPoints as dicts.
             converted_cols = {}
             for col in group_by_cols:
                 if col in df.columns:
-                    # Check if any values are lists
                     sample = df[col].dropna().head(1)
                     if len(sample) > 0 and isinstance(sample.iloc[0], list):
-                        # Convert list to tuple for hashing
                         converted_cols[col] = df[col].apply(
                             lambda x: tuple(
-                                tuple(d.items()) if isinstance(d, dict) else d
+                                tuple(sorted(d.items()))
+                                if isinstance(d, dict)
+                                else d
                                 for d in x
                             )
                             if isinstance(x, list)
                             else x
                         )
                         df[col] = converted_cols[col]
+                    elif len(sample) > 0 and isinstance(sample.iloc[0], dict):
+                        converted_cols[col] = df[col].apply(
+                            lambda x: tuple(sorted(x.items()))
+                            if isinstance(x, dict)
+                            else x
+                        )
+                        df[col] = converted_cols[col]
 
             col_renames = {}
             for p in parsed.expressions:
-                if isinstance(p.this, exp.AggFunc):
-                    original_col_name = (
-                        p.this.expressions[0].name
-                        if p.this.expressions
-                        else p.this.this.this.name
+                if isinstance(p, exp.Alias) and p.find(exp.AggFunc):
+                    agg_func = p.this
+                    agg_func_name = agg_func.key.lower()
+                    # Map SQL aggregate names to pandas equivalents
+                    sql_to_pandas_agg = {"avg": "mean"}
+                    agg_func_name = sql_to_pandas_agg.get(
+                        agg_func_name, agg_func_name
                     )
-                    agg_func_name = p.this.key.lower()
+                    if agg_func.expressions:
+                        original_col_name = agg_func.expressions[0].name
+                    elif isinstance(agg_func.this, exp.Distinct):
+                        # COUNT(DISTINCT col) - column is inside Distinct
+                        original_col_name = (
+                            agg_func.this.expressions[0].name
+                        )
+                        # Use pandas nunique for COUNT(DISTINCT)
+                        agg_func_name = "nunique"
+                    elif agg_func.this is not None and hasattr(
+                        agg_func.this, "name"
+                    ):
+                        original_col_name = agg_func.this.name
+                    else:
+                        # Fallback for COUNT(*) or unknown structures
+                        original_col_name = group_by_cols[0]
                     desired_sql_alias = p.alias_or_name
                     col_renames = {"temp_agg": desired_sql_alias}
                     df = (
@@ -1636,11 +1681,61 @@ class Cursor:
                         .rename(columns=col_renames)
                     )
 
+        elif has_agg:
+            # Aggregation without GROUP BY (e.g., SELECT COUNT(*) FROM table)
+            result_data: Dict[str, Any] = {}
+            for p in parsed.expressions:
+                if not isinstance(p, exp.Alias) or not p.find(exp.AggFunc):
+                    continue
+                agg_func = p.this
+                agg_func_name = agg_func.key.lower()
+                alias = p.alias_or_name
+
+                if agg_func_name == "count":
+                    if isinstance(agg_func.this, exp.Star):
+                        result_data[alias] = len(df)
+                    elif isinstance(agg_func.this, exp.Distinct):
+                        col_name = agg_func.this.expressions[0].name
+                        result_data[alias] = df[col_name].nunique()
+                    elif agg_func.expressions:
+                        col_name = agg_func.expressions[0].name
+                        result_data[alias] = df[col_name].count()
+                    else:
+                        result_data[alias] = len(df)
+                elif agg_func_name == "sum":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].sum()
+                elif agg_func_name == "avg":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].mean()
+                elif agg_func_name == "min":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].min()
+                elif agg_func_name == "max":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].max()
+                else:
+                    result_data[alias] = None
+
+            df = pd.DataFrame([result_data])
+
         if parsed.args.get("order"):
             order_by_cols = [e.this.name for e in parsed.args["order"].expressions]
             ascending = [
                 not e.args.get("desc", False) for e in parsed.args["order"].expressions
             ]
+            # Convert uncomparable types (dicts, lists) to strings for sorting.
+            # Datastore keys are lists of dicts and GeoPoints are dicts, which
+            # cannot be compared with < in Python 3.
+            for col in order_by_cols:
+                if col in df.columns:
+                    sample = df[col].dropna().head(1)
+                    if len(sample) > 0 and isinstance(
+                        sample.iloc[0], (dict, list)
+                    ):
+                        df[col] = df[col].apply(
+                            lambda x: str(x) if isinstance(x, (dict, list)) else x
+                        )
             df = df.sort_values(by=order_by_cols, ascending=ascending)
 
         if parsed.args.get("limit"):
