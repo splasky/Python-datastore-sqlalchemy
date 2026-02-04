@@ -673,6 +673,216 @@ class Cursor:
             return base.strip()
         return statement
 
+    def _is_missing_index_error(self, response: Response) -> bool:
+        """Check if the GQL response indicates a missing composite index."""
+        if response.status_code not in (400, 409):
+            return False
+        try:
+            body = response.json()
+            error = body.get("error", {})
+            message = error.get("message", "").lower()
+            status = error.get("status", "")
+            return (
+                "no matching index found" in message
+                or status == "FAILED_PRECONDITION"
+            )
+        except Exception:
+            return "no matching index" in response.text.lower()
+
+    def _extract_table_only_query(self, gql_statement: str) -> str:
+        """Extract just 'SELECT * FROM <table>' from a GQL statement."""
+        table_match = re.search(
+            r"\bFROM\s+(\w+)", gql_statement, flags=re.IGNORECASE
+        )
+        if table_match:
+            return f"SELECT * FROM {table_match.group(1)}"
+        raise ProgrammingError(
+            f"Could not extract table name from query: {gql_statement}"
+        )
+
+    def _parse_order_by_clause(
+        self, gql_statement: str
+    ) -> List[Tuple[str, bool]]:
+        """Parse ORDER BY clause. Returns list of (column, ascending) tuples."""
+        upper = gql_statement.upper()
+        order_idx = upper.find(" ORDER BY ")
+        if order_idx < 0:
+            return []
+        # Find end of ORDER BY (before LIMIT, OFFSET)
+        end_idx = len(gql_statement)
+        for pattern in [" LIMIT ", " OFFSET "]:
+            idx = upper.find(pattern, order_idx + 10)
+            if 0 < idx < end_idx:
+                end_idx = idx
+        order_clause = gql_statement[order_idx + 10 : end_idx].strip()
+        if not order_clause:
+            return []
+        result: List[Tuple[str, bool]] = []
+        for part in order_clause.split(","):
+            part = part.strip()
+            parts = part.split()
+            if not parts:
+                continue
+            col_name = parts[0]
+            ascending = not (len(parts) > 1 and parts[1].upper() == "DESC")
+            result.append((col_name, ascending))
+        return result
+
+    def _parse_limit_offset_clause(
+        self, gql_statement: str
+    ) -> Tuple[Optional[int], int]:
+        """Parse LIMIT and OFFSET from statement. Returns (limit, offset)."""
+        limit = None
+        offset = 0
+        limit_match = re.search(
+            r"\bLIMIT\s+(\d+)", gql_statement, flags=re.IGNORECASE
+        )
+        if limit_match:
+            limit = int(limit_match.group(1))
+        offset_match = re.search(
+            r"\bOFFSET\s+(\d+)", gql_statement, flags=re.IGNORECASE
+        )
+        if offset_match:
+            offset = int(offset_match.group(1))
+        return limit, offset
+
+    def _apply_client_side_order_by(
+        self,
+        rows: List[Tuple],
+        fields: Dict[str, Any],
+        order_keys: List[Tuple[str, bool]],
+    ) -> List[Tuple]:
+        """Sort rows on the client side based on ORDER BY specification."""
+        if not order_keys or not rows:
+            return rows
+        from functools import cmp_to_key
+
+        field_names = list(fields.keys())
+
+        def compare_rows(row_a: Tuple, row_b: Tuple) -> int:
+            for col_name, ascending in order_keys:
+                if col_name in field_names:
+                    idx = field_names.index(col_name)
+                    val_a = row_a[idx] if idx < len(row_a) else None
+                    val_b = row_b[idx] if idx < len(row_b) else None
+                else:
+                    val_a = None
+                    val_b = None
+                if val_a is None and val_b is None:
+                    continue
+                if val_a is None:
+                    return 1  # None sorts last
+                if val_b is None:
+                    return -1
+                try:
+                    if val_a < val_b:
+                        cmp_result = -1
+                    elif val_a > val_b:
+                        cmp_result = 1
+                    else:
+                        continue
+                except TypeError:
+                    continue
+                if not ascending:
+                    cmp_result = -cmp_result
+                return cmp_result
+            return 0
+
+        return sorted(rows, key=cmp_to_key(compare_rows))
+
+    def _execute_fallback_query(
+        self, original_statement: str, gql_statement: str
+    ):
+        """Execute a fallback query when the original fails due to missing index.
+
+        Fetches all data from the table and applies WHERE, ORDER BY,
+        LIMIT/OFFSET on the client side.
+        """
+        logging.debug(
+            f"Missing index fallback: fetching all data for client-side "
+            f"processing. Original GQL: {gql_statement}"
+        )
+
+        # Build simple query to fetch all data from the table
+        fallback_query = self._extract_table_only_query(gql_statement)
+        response = self._execute_gql_request(fallback_query)
+        if response.status_code != 200:
+            raise OperationalError(
+                f"Fallback query failed: {fallback_query} "
+                f"(original: {gql_statement})"
+            )
+
+        data = response.json()
+        entity_results = data.get("batch", {}).get("entityResults", [])
+
+        # Initialize cursor state for empty result
+        self._query_data = iter([])
+        self._query_rows = iter([])
+        self.rowcount = 0
+        self.description = [(None, None, None, None, None, None, None)]
+        self._last_executed = original_statement
+        self._parameters = {}
+
+        if not entity_results:
+            return
+
+        self._closed = False
+
+        # Parse entities with all columns (needed for filtering/sorting)
+        rows, fields = ParseEntity.parse(entity_results, None)
+
+        # Apply WHERE filter using the original statement to preserve
+        # binary data in BLOB literals (whitespace normalization in
+        # _convert_sql_to_gql would corrupt them).
+        rows = self._apply_client_side_filter(rows, fields, original_statement)
+
+        # Apply ORDER BY
+        order_keys = self._parse_order_by_clause(gql_statement)
+        if order_keys:
+            rows = self._apply_client_side_order_by(rows, fields, order_keys)
+
+        # Apply LIMIT/OFFSET
+        limit, offset = self._parse_limit_offset_clause(gql_statement)
+        if offset > 0:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+
+        # Project to requested columns if the original query specified them
+        selected_columns = self._parse_select_columns(original_statement)
+        if selected_columns is not None:
+            field_names = list(fields.keys())
+            projected_rows: List[Tuple] = []
+            projected_fields: Dict[str, Any] = {}
+
+            for col in selected_columns:
+                col_lower = col.lower()
+                if col_lower in ("__key__", "key") and "key" in fields:
+                    projected_fields["key"] = fields["key"]
+                elif col in fields:
+                    projected_fields[col] = fields[col]
+
+            for row in rows:
+                new_row: List[Any] = []
+                for col in selected_columns:
+                    col_lower = col.lower()
+                    lookup = "key" if col_lower in ("__key__", "key") else col
+                    if lookup in field_names:
+                        idx = field_names.index(lookup)
+                        new_row.append(row[idx] if idx < len(row) else None)
+                    else:
+                        new_row.append(None)
+                projected_rows.append(tuple(new_row))
+
+            rows = projected_rows
+            fields = projected_fields
+
+        fields_list = list(fields.values())
+        self._query_data = iter(rows)
+        self._query_rows = iter(rows)
+        self.rowcount = len(rows)
+        self.description = fields_list if fields_list else None
+
     def _apply_client_side_filter(
         self, rows: List[Tuple], fields: Dict[str, Any], statement: str
     ) -> List[Tuple]:
@@ -1144,11 +1354,11 @@ class Cursor:
             self._execute_aggregation_query(statement, parameters)
             return
 
-        # Check if we need client-side filtering
-        needs_filter = self._needs_client_side_filter(statement)
+        # Check if we need client-side filtering (check converted GQL)
+        needs_filter = self._needs_client_side_filter(gql_statement)
         if needs_filter:
             # Get base query without unsupported WHERE conditions
-            base_query = self._extract_base_query_for_filter(statement)
+            base_query = self._extract_base_query_for_filter(gql_statement)
             gql_statement = self._convert_sql_to_gql(base_query)
 
         # Execute GQL query
@@ -1158,12 +1368,19 @@ class Cursor:
             data = response.json()
             logging.debug(data)
         else:
-            logging.debug(f"Error: {response.status_code} {response.text}")
-            logging.debug(f"Original statement: {statement}")
-            logging.debug(f"GQL statement: {gql_statement}")
-            raise OperationalError(
-                f"GQL query failed: {gql_statement} (original: {statement})"
+            # Fall back to client-side processing for any GQL failure.
+            # The emulator may return 400 (INVALID_ARGUMENT for !=, NOT IN,
+            # multi-value IN ARRAY), 409/400 (missing composite index), or
+            # 500 (server error). In all cases we fetch all data from the
+            # table and apply WHERE, ORDER BY, LIMIT/OFFSET client-side.
+            # If even the simple fallback query fails, it raises an error.
+            logging.debug(
+                "GQL query failed (status %d), falling back to "
+                "client-side processing",
+                response.status_code,
             )
+            self._execute_fallback_query(statement, statement)
+            return
 
         self._query_data = iter([])
         self._query_rows = iter([])
@@ -1189,7 +1406,10 @@ class Cursor:
 
             rows, fields = ParseEntity.parse(data, selected_columns)
 
-            # Apply client-side filtering if needed
+            # Apply client-side filtering if needed.
+            # Use the original statement (not the converted GQL) to preserve
+            # binary data inside BLOB literals that whitespace normalization
+            # in _convert_sql_to_gql would corrupt.
             if needs_filter:
                 rows = self._apply_client_side_filter(rows, fields, statement)
 
@@ -1238,22 +1458,58 @@ class Cursor:
             self.description = list(result_fields.values())
             return
 
-        # Check if the base query needs client-side filtering
-        needs_filter = self._needs_client_side_filter(base_query)
+        # Convert to GQL first, then check for client-side filtering
+        base_gql = self._convert_sql_to_gql(base_query)
+        original_base_gql = base_gql  # Save for potential fallback
+        needs_filter = self._needs_client_side_filter(base_gql)
         if needs_filter:
-            # Get base query without unsupported WHERE conditions
-            filter_query = self._extract_base_query_for_filter(base_query)
+            filter_query = self._extract_base_query_for_filter(base_gql)
             base_gql = self._convert_sql_to_gql(filter_query)
-        else:
-            base_gql = self._convert_sql_to_gql(base_query)
 
         response = self._execute_gql_request(base_gql)
 
         if response.status_code != 200:
-            logging.debug(f"Error: {response.status_code} {response.text}")
-            raise OperationalError(
-                f"Aggregation base query failed: {base_gql} (original: {statement})"
+            logging.debug(
+                "Aggregation base query failed (status %d), "
+                "falling back to client-side processing",
+                response.status_code,
             )
+            fallback_query = self._extract_table_only_query(
+                original_base_gql
+            )
+            response = self._execute_gql_request(fallback_query)
+            if response.status_code != 200:
+                raise OperationalError(
+                    f"Aggregation fallback query failed: "
+                    f"{fallback_query} (original: {statement})"
+                )
+            fb_data = response.json()
+            fb_results = fb_data.get("batch", {}).get(
+                "entityResults", []
+            )
+            if not fb_results:
+                result_values: List[Any] = []
+                result_fields: Dict[str, Any] = {}
+                for _fn, _col, alias in agg_functions:
+                    result_values.append(0)
+                    result_fields[alias] = (
+                        alias, None, None, None, None, None, None
+                    )
+                self._query_rows = iter([tuple(result_values)])
+                self.rowcount = 1
+                self.description = list(result_fields.values())
+                return
+            rows, fields = ParseEntity.parse(fb_results, None)
+            rows = self._apply_client_side_filter(
+                rows, fields, base_query
+            )
+            agg_rows, agg_fields = self._compute_aggregations(
+                rows, fields, agg_functions
+            )
+            self._query_rows = iter(agg_rows)
+            self.rowcount = len(agg_rows)
+            self.description = list(agg_fields.values())
+            return
 
         data = response.json()
         entity_results = data.get("batch", {}).get("entityResults", [])
