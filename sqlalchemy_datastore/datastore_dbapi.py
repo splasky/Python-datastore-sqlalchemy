@@ -120,6 +120,7 @@ class Cursor:
         self._closed = False
         self.description = None
         self.lastrowid = None
+        self.warnings: list[str] = []
 
     def execute(self, statements, parameters=None):
         """Execute a Datastore operation."""
@@ -798,10 +799,15 @@ class Cursor:
         Fetches all data from the table and applies WHERE, ORDER BY,
         LIMIT/OFFSET on the client side.
         """
-        logging.debug(
-            f"Missing index fallback: fetching all data for client-side "
-            f"processing. Original GQL: {gql_statement}"
+        warning_msg = (
+            "Missing index: the query requires an index that does not exist "
+            "in Datastore. Falling back to fetching ALL entities and "
+            "processing client-side (SELECT * mode). This may significantly "
+            "increase query and egress costs. Consider adding the required "
+            "composite index to avoid this."
         )
+        logging.warning("%s Original GQL: %s", warning_msg, gql_statement)
+        self.warnings.append(warning_msg)
 
         # Build simple query to fetch all data from the table
         fallback_query = self._extract_table_only_query(gql_statement)
@@ -1374,11 +1380,16 @@ class Cursor:
             # 500 (server error). In all cases we fetch all data from the
             # table and apply WHERE, ORDER BY, LIMIT/OFFSET client-side.
             # If even the simple fallback query fails, it raises an error.
-            logging.debug(
-                "GQL query failed (status %d), falling back to "
-                "client-side processing",
-                response.status_code,
+            warning_msg = (
+                "GQL query failed. Falling back to fetching ALL entities "
+                "and processing client-side (SELECT * mode). This may "
+                "significantly increase query and egress costs. Consider "
+                "adding the required index for this query."
             )
+            logging.warning(
+                "%s (status %d)", warning_msg, response.status_code
+            )
+            self.warnings.append(warning_msg)
             self._execute_fallback_query(statement, statement)
             return
 
@@ -1469,11 +1480,17 @@ class Cursor:
         response = self._execute_gql_request(base_gql)
 
         if response.status_code != 200:
-            logging.debug(
-                "Aggregation base query failed (status %d), "
-                "falling back to client-side processing",
-                response.status_code,
+            warning_msg = (
+                "Aggregation base query failed. Falling back to fetching "
+                "ALL entities and aggregating client-side (SELECT * mode). "
+                "This may significantly increase query and egress costs. "
+                "Consider adding the required index for the columns used "
+                "in this aggregation."
             )
+            logging.warning(
+                "%s (status %d)", warning_msg, response.status_code
+            )
+            self.warnings.append(warning_msg)
             fallback_query = self._extract_table_only_query(
                 original_base_gql
             )
