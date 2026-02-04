@@ -615,10 +615,20 @@ class Cursor:
 
         project_id = self._datastore_client.project
         if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            credentials = service_account.Credentials.from_service_account_info(
-                self._datastore_client.credentials_info,
-                scopes=["https://www.googleapis.com/auth/datastore"],
+            credentials = getattr(
+                self._datastore_client, "scoped_credentials", None
             )
+            if credentials is None and self._datastore_client.credentials_info:
+                credentials = service_account.Credentials.from_service_account_info(
+                    self._datastore_client.credentials_info,
+                    scopes=["https://www.googleapis.com/auth/datastore"],
+                )
+            if credentials is None:
+                raise ProgrammingError(
+                    "No credentials available for Datastore query. "
+                    "Provide credentials_info, credentials_path, or "
+                    "configure Application Default Credentials."
+                )
             authed_session = AuthorizedSession(credentials)
             url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
             return authed_session.post(url, json=body)
