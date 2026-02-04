@@ -20,15 +20,15 @@
 import re
 
 from google.cloud.bigquery.dataset import DatasetReference
-from google.cloud.bigquery.table import TableReference
-from google.cloud.bigquery.job import QueryJobConfig
 from google.cloud.bigquery.encryption_configuration import EncryptionConfiguration
 from google.cloud.bigquery.job import (
     CreateDisposition,
-    WriteDisposition,
+    QueryJobConfig,
     QueryPriority,
     SchemaUpdateOption,
+    WriteDisposition,
 )
+from google.cloud.bigquery.table import TableReference
 
 GROUP_DELIMITER = re.compile(r"\s*\,\s*")
 KEY_VALUE_DELIMITER = re.compile(r"\s*\:\s*")

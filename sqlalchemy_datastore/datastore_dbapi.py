@@ -615,10 +615,20 @@ class Cursor:
 
         project_id = self._datastore_client.project
         if os.getenv("DATASTORE_EMULATOR_HOST") is None:
-            credentials = service_account.Credentials.from_service_account_info(
-                self._datastore_client.credentials_info,
-                scopes=["https://www.googleapis.com/auth/datastore"],
+            credentials = getattr(
+                self._datastore_client, "scoped_credentials", None
             )
+            if credentials is None and self._datastore_client.credentials_info:
+                credentials = service_account.Credentials.from_service_account_info(
+                    self._datastore_client.credentials_info,
+                    scopes=["https://www.googleapis.com/auth/datastore"],
+                )
+            if credentials is None:
+                raise ProgrammingError(
+                    "No credentials available for Datastore query. "
+                    "Provide credentials_info, credentials_path, or "
+                    "configure Application Default Credentials."
+                )
             authed_session = AuthorizedSession(credentials)
             url = f"https://datastore.googleapis.com/v1/projects/{project_id}:runQuery"
             return authed_session.post(url, json=body)
@@ -628,18 +638,17 @@ class Cursor:
             return requests.post(url, json=body)
 
     def _needs_client_side_filter(self, statement: str) -> bool:
-        """Check if the query needs client-side filtering due to unsupported ops."""
+        """Check if the query needs client-side filtering due to unsupported ops.
+
+        Note: This should be called on the CONVERTED GQL statement (after
+        _convert_sql_to_gql), since that method handles reversing sqlglot
+        transformations like <> -> != and NOT col IN -> col NOT IN.
+        GQL natively supports: =, <, >, <=, >=, !=, IN, NOT IN, CONTAINS.
+        """
         upper = statement.upper()
-        # Check for operators not well-supported by emulator
         unsupported_patterns = [
-            r"\bOR\b",  # OR conditions
-            r"!=",  # Not equals
-            r"<>",  # Not equals (alternate)
-            r"\bNOT\s+IN\b",  # NOT IN
-            r"\bIN\s*\(",  # IN clause (emulator has issues)
-            r"\bHAS\s+ANCESTOR\b",  # HAS ANCESTOR
-            r"\bHAS\s+DESCENDANT\b",  # HAS DESCENDANT
-            r"\bBLOB\s*\(",  # BLOB literal (emulator doesn't support)
+            r"\bOR\b",  # OR conditions need client-side evaluation
+            r"\bBLOB\s*\(",  # BLOB literal (escaping issues)
         ]
         for pattern in unsupported_patterns:
             if re.search(pattern, upper):
@@ -663,6 +672,216 @@ class Cursor:
             base = statement[:where_idx] + statement[end_idx:]
             return base.strip()
         return statement
+
+    def _is_missing_index_error(self, response: Response) -> bool:
+        """Check if the GQL response indicates a missing composite index."""
+        if response.status_code not in (400, 409):
+            return False
+        try:
+            body = response.json()
+            error = body.get("error", {})
+            message = error.get("message", "").lower()
+            status = error.get("status", "")
+            return (
+                "no matching index found" in message
+                or status == "FAILED_PRECONDITION"
+            )
+        except Exception:
+            return "no matching index" in response.text.lower()
+
+    def _extract_table_only_query(self, gql_statement: str) -> str:
+        """Extract just 'SELECT * FROM <table>' from a GQL statement."""
+        table_match = re.search(
+            r"\bFROM\s+(\w+)", gql_statement, flags=re.IGNORECASE
+        )
+        if table_match:
+            return f"SELECT * FROM {table_match.group(1)}"
+        raise ProgrammingError(
+            f"Could not extract table name from query: {gql_statement}"
+        )
+
+    def _parse_order_by_clause(
+        self, gql_statement: str
+    ) -> List[Tuple[str, bool]]:
+        """Parse ORDER BY clause. Returns list of (column, ascending) tuples."""
+        upper = gql_statement.upper()
+        order_idx = upper.find(" ORDER BY ")
+        if order_idx < 0:
+            return []
+        # Find end of ORDER BY (before LIMIT, OFFSET)
+        end_idx = len(gql_statement)
+        for pattern in [" LIMIT ", " OFFSET "]:
+            idx = upper.find(pattern, order_idx + 10)
+            if 0 < idx < end_idx:
+                end_idx = idx
+        order_clause = gql_statement[order_idx + 10 : end_idx].strip()
+        if not order_clause:
+            return []
+        result: List[Tuple[str, bool]] = []
+        for part in order_clause.split(","):
+            part = part.strip()
+            parts = part.split()
+            if not parts:
+                continue
+            col_name = parts[0]
+            ascending = not (len(parts) > 1 and parts[1].upper() == "DESC")
+            result.append((col_name, ascending))
+        return result
+
+    def _parse_limit_offset_clause(
+        self, gql_statement: str
+    ) -> Tuple[Optional[int], int]:
+        """Parse LIMIT and OFFSET from statement. Returns (limit, offset)."""
+        limit = None
+        offset = 0
+        limit_match = re.search(
+            r"\bLIMIT\s+(\d+)", gql_statement, flags=re.IGNORECASE
+        )
+        if limit_match:
+            limit = int(limit_match.group(1))
+        offset_match = re.search(
+            r"\bOFFSET\s+(\d+)", gql_statement, flags=re.IGNORECASE
+        )
+        if offset_match:
+            offset = int(offset_match.group(1))
+        return limit, offset
+
+    def _apply_client_side_order_by(
+        self,
+        rows: List[Tuple],
+        fields: Dict[str, Any],
+        order_keys: List[Tuple[str, bool]],
+    ) -> List[Tuple]:
+        """Sort rows on the client side based on ORDER BY specification."""
+        if not order_keys or not rows:
+            return rows
+        from functools import cmp_to_key
+
+        field_names = list(fields.keys())
+
+        def compare_rows(row_a: Tuple, row_b: Tuple) -> int:
+            for col_name, ascending in order_keys:
+                if col_name in field_names:
+                    idx = field_names.index(col_name)
+                    val_a = row_a[idx] if idx < len(row_a) else None
+                    val_b = row_b[idx] if idx < len(row_b) else None
+                else:
+                    val_a = None
+                    val_b = None
+                if val_a is None and val_b is None:
+                    continue
+                if val_a is None:
+                    return 1  # None sorts last
+                if val_b is None:
+                    return -1
+                try:
+                    if val_a < val_b:
+                        cmp_result = -1
+                    elif val_a > val_b:
+                        cmp_result = 1
+                    else:
+                        continue
+                except TypeError:
+                    continue
+                if not ascending:
+                    cmp_result = -cmp_result
+                return cmp_result
+            return 0
+
+        return sorted(rows, key=cmp_to_key(compare_rows))
+
+    def _execute_fallback_query(
+        self, original_statement: str, gql_statement: str
+    ):
+        """Execute a fallback query when the original fails due to missing index.
+
+        Fetches all data from the table and applies WHERE, ORDER BY,
+        LIMIT/OFFSET on the client side.
+        """
+        logging.debug(
+            f"Missing index fallback: fetching all data for client-side "
+            f"processing. Original GQL: {gql_statement}"
+        )
+
+        # Build simple query to fetch all data from the table
+        fallback_query = self._extract_table_only_query(gql_statement)
+        response = self._execute_gql_request(fallback_query)
+        if response.status_code != 200:
+            raise OperationalError(
+                f"Fallback query failed: {fallback_query} "
+                f"(original: {gql_statement})"
+            )
+
+        data = response.json()
+        entity_results = data.get("batch", {}).get("entityResults", [])
+
+        # Initialize cursor state for empty result
+        self._query_data = iter([])
+        self._query_rows = iter([])
+        self.rowcount = 0
+        self.description = [(None, None, None, None, None, None, None)]
+        self._last_executed = original_statement
+        self._parameters = {}
+
+        if not entity_results:
+            return
+
+        self._closed = False
+
+        # Parse entities with all columns (needed for filtering/sorting)
+        rows, fields = ParseEntity.parse(entity_results, None)
+
+        # Apply WHERE filter using the original statement to preserve
+        # binary data in BLOB literals (whitespace normalization in
+        # _convert_sql_to_gql would corrupt them).
+        rows = self._apply_client_side_filter(rows, fields, original_statement)
+
+        # Apply ORDER BY
+        order_keys = self._parse_order_by_clause(gql_statement)
+        if order_keys:
+            rows = self._apply_client_side_order_by(rows, fields, order_keys)
+
+        # Apply LIMIT/OFFSET
+        limit, offset = self._parse_limit_offset_clause(gql_statement)
+        if offset > 0:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+
+        # Project to requested columns if the original query specified them
+        selected_columns = self._parse_select_columns(original_statement)
+        if selected_columns is not None:
+            field_names = list(fields.keys())
+            projected_rows: List[Tuple] = []
+            projected_fields: Dict[str, Any] = {}
+
+            for col in selected_columns:
+                col_lower = col.lower()
+                if col_lower in ("__key__", "key") and "key" in fields:
+                    projected_fields["key"] = fields["key"]
+                elif col in fields:
+                    projected_fields[col] = fields[col]
+
+            for row in rows:
+                new_row: List[Any] = []
+                for col in selected_columns:
+                    col_lower = col.lower()
+                    lookup = "key" if col_lower in ("__key__", "key") else col
+                    if lookup in field_names:
+                        idx = field_names.index(lookup)
+                        new_row.append(row[idx] if idx < len(row) else None)
+                    else:
+                        new_row.append(None)
+                projected_rows.append(tuple(new_row))
+
+            rows = projected_rows
+            fields = projected_fields
+
+        fields_list = list(fields.values())
+        self._query_data = iter(rows)
+        self._query_rows = iter(rows)
+        self.rowcount = len(rows)
+        self.description = fields_list if fields_list else None
 
     def _apply_client_side_filter(
         self, rows: List[Tuple], fields: Dict[str, Any], statement: str
@@ -781,6 +1000,26 @@ class Cursor:
         """Evaluate a simple comparison condition."""
         condition = condition.strip()
 
+        # Handle __key__ = KEY(kind, value) comparison
+        # Entity key is stored as "key" in context (from ParseEntity)
+        key_eq_match = re.match(
+            r"__key__\s*=\s*KEY\s*\(\s*\w+\s*,\s*(?:'([^']*)'|(\d+))\s*\)",
+            condition,
+            re.IGNORECASE,
+        )
+        if key_eq_match:
+            key_name = key_eq_match.group(1)
+            key_id = key_eq_match.group(2)
+            field_val = context.get("key") or context.get("__key__")
+            if isinstance(field_val, list) and len(field_val) > 0:
+                last_path = field_val[-1]
+                if isinstance(last_path, dict):
+                    if key_name is not None:
+                        return last_path.get("name") == key_name
+                    if key_id is not None:
+                        return str(last_path.get("id")) == key_id
+            return False
+
         # Handle BLOB equality (before generic handlers, since BLOB literal
         # would confuse the generic _parse_literal path)
         blob_eq_match = re.match(
@@ -818,9 +1057,10 @@ class Cursor:
                 return field_val != blob_bytes
             return True
 
-        # Handle NOT IN
+        # Handle NOT IN / NOT IN ARRAY
         not_in_match = re.match(
-            r"(\w+)\s+NOT\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE
+            r"(\w+)\s+NOT\s+IN\s+(?:ARRAY\s*)?\(([^)]+)\)",
+            condition, re.IGNORECASE,
         )
         if not_in_match:
             field = not_in_match.group(1)
@@ -829,8 +1069,11 @@ class Cursor:
             field_val = context.get(field)
             return field_val not in values
 
-        # Handle IN
-        in_match = re.match(r"(\w+)\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE)
+        # Handle IN / IN ARRAY
+        in_match = re.match(
+            r"(\w+)\s+IN\s+(?:ARRAY\s*)?\(([^)]+)\)",
+            condition, re.IGNORECASE,
+        )
         if in_match:
             field = in_match.group(1)
             values_str = in_match.group(2)
@@ -853,7 +1096,10 @@ class Cursor:
             value = self._parse_literal(gte_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val >= value
+                try:
+                    return field_val >= value
+                except TypeError:
+                    return False
             return False
 
         # Handle <=
@@ -863,7 +1109,10 @@ class Cursor:
             value = self._parse_literal(lte_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val <= value
+                try:
+                    return field_val <= value
+                except TypeError:
+                    return False
             return False
 
         # Handle >
@@ -873,7 +1122,10 @@ class Cursor:
             value = self._parse_literal(gt_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val > value
+                try:
+                    return field_val > value
+                except TypeError:
+                    return False
             return False
 
         # Handle <
@@ -883,7 +1135,10 @@ class Cursor:
             value = self._parse_literal(lt_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val < value
+                try:
+                    return field_val < value
+                except TypeError:
+                    return False
             return False
 
         # Handle =
@@ -907,6 +1162,26 @@ class Cursor:
     def _parse_literal(self, literal: str) -> Any:
         """Parse a literal value from string."""
         literal = literal.strip()
+        # DATETIME literal: DATETIME('2023-01-01T00:00:00Z')
+        datetime_match = re.match(
+            r"DATETIME\s*\(\s*'([^']*)'\s*\)", literal, re.IGNORECASE
+        )
+        if datetime_match:
+            timestamp_str = datetime_match.group(1)
+            if timestamp_str.endswith("Z"):
+                timestamp_str = timestamp_str.replace("Z", "+00:00")
+            # Normalize fractional seconds to 6 digits for Python 3.10
+            # compatibility (fromisoformat only handles 0, 3, or 6 digits).
+            frac_match = re.match(
+                r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(.*)",
+                timestamp_str,
+            )
+            if frac_match:
+                frac = frac_match.group(2)[:6].ljust(6, "0")
+                timestamp_str = (
+                    frac_match.group(1) + "." + frac + frac_match.group(3)
+                )
+            return datetime.fromisoformat(timestamp_str)
         # String literal
         if (literal.startswith("'") and literal.endswith("'")) or (
             literal.startswith('"') and literal.endswith('"')
@@ -1079,11 +1354,11 @@ class Cursor:
             self._execute_aggregation_query(statement, parameters)
             return
 
-        # Check if we need client-side filtering
-        needs_filter = self._needs_client_side_filter(statement)
+        # Check if we need client-side filtering (check converted GQL)
+        needs_filter = self._needs_client_side_filter(gql_statement)
         if needs_filter:
             # Get base query without unsupported WHERE conditions
-            base_query = self._extract_base_query_for_filter(statement)
+            base_query = self._extract_base_query_for_filter(gql_statement)
             gql_statement = self._convert_sql_to_gql(base_query)
 
         # Execute GQL query
@@ -1093,12 +1368,19 @@ class Cursor:
             data = response.json()
             logging.debug(data)
         else:
-            logging.debug(f"Error: {response.status_code} {response.text}")
-            logging.debug(f"Original statement: {statement}")
-            logging.debug(f"GQL statement: {gql_statement}")
-            raise OperationalError(
-                f"GQL query failed: {gql_statement} (original: {statement})"
+            # Fall back to client-side processing for any GQL failure.
+            # The emulator may return 400 (INVALID_ARGUMENT for !=, NOT IN,
+            # multi-value IN ARRAY), 409/400 (missing composite index), or
+            # 500 (server error). In all cases we fetch all data from the
+            # table and apply WHERE, ORDER BY, LIMIT/OFFSET client-side.
+            # If even the simple fallback query fails, it raises an error.
+            logging.debug(
+                "GQL query failed (status %d), falling back to "
+                "client-side processing",
+                response.status_code,
             )
+            self._execute_fallback_query(statement, statement)
+            return
 
         self._query_data = iter([])
         self._query_rows = iter([])
@@ -1124,7 +1406,10 @@ class Cursor:
 
             rows, fields = ParseEntity.parse(data, selected_columns)
 
-            # Apply client-side filtering if needed
+            # Apply client-side filtering if needed.
+            # Use the original statement (not the converted GQL) to preserve
+            # binary data inside BLOB literals that whitespace normalization
+            # in _convert_sql_to_gql would corrupt.
             if needs_filter:
                 rows = self._apply_client_side_filter(rows, fields, statement)
 
@@ -1173,22 +1458,58 @@ class Cursor:
             self.description = list(result_fields.values())
             return
 
-        # Check if the base query needs client-side filtering
-        needs_filter = self._needs_client_side_filter(base_query)
+        # Convert to GQL first, then check for client-side filtering
+        base_gql = self._convert_sql_to_gql(base_query)
+        original_base_gql = base_gql  # Save for potential fallback
+        needs_filter = self._needs_client_side_filter(base_gql)
         if needs_filter:
-            # Get base query without unsupported WHERE conditions
-            filter_query = self._extract_base_query_for_filter(base_query)
+            filter_query = self._extract_base_query_for_filter(base_gql)
             base_gql = self._convert_sql_to_gql(filter_query)
-        else:
-            base_gql = self._convert_sql_to_gql(base_query)
 
         response = self._execute_gql_request(base_gql)
 
         if response.status_code != 200:
-            logging.debug(f"Error: {response.status_code} {response.text}")
-            raise OperationalError(
-                f"Aggregation base query failed: {base_gql} (original: {statement})"
+            logging.debug(
+                "Aggregation base query failed (status %d), "
+                "falling back to client-side processing",
+                response.status_code,
             )
+            fallback_query = self._extract_table_only_query(
+                original_base_gql
+            )
+            response = self._execute_gql_request(fallback_query)
+            if response.status_code != 200:
+                raise OperationalError(
+                    f"Aggregation fallback query failed: "
+                    f"{fallback_query} (original: {statement})"
+                )
+            fb_data = response.json()
+            fb_results = fb_data.get("batch", {}).get(
+                "entityResults", []
+            )
+            if not fb_results:
+                result_values: List[Any] = []
+                result_fields: Dict[str, Any] = {}
+                for _fn, _col, alias in agg_functions:
+                    result_values.append(0)
+                    result_fields[alias] = (
+                        alias, None, None, None, None, None, None
+                    )
+                self._query_rows = iter([tuple(result_values)])
+                self.rowcount = 1
+                self.description = list(result_fields.values())
+                return
+            rows, fields = ParseEntity.parse(fb_results, None)
+            rows = self._apply_client_side_filter(
+                rows, fields, base_query
+            )
+            agg_rows, agg_fields = self._compute_aggregations(
+                rows, fields, agg_functions
+            )
+            self._query_rows = iter(agg_rows)
+            self.rowcount = len(agg_rows)
+            self.description = list(agg_fields.values())
+            return
 
         data = response.json()
         entity_results = data.get("batch", {}).get("entityResults", [])
@@ -1274,38 +1595,83 @@ class Cursor:
                 except Exception as e:
                     logging.warning(f"Could not evaluate expression '{expr_str}': {e}")
 
-        # 3. Apply outer query logic
-        if parsed.args.get("group"):
-            group_by_cols = [e.name for e in parsed.args.get("group").expressions]
+        # 3. Apply outer query logic (aggregations and GROUP BY)
+        has_agg = any(
+            isinstance(p, exp.Alias) and p.find(exp.AggFunc)
+            for p in parsed.expressions
+        )
 
-            # Convert unhashable types (lists) to hashable types (tuples) for groupby
-            # Datastore keys are stored as lists, which pandas can't group by
+        if parsed.args.get("group"):
+            group_by_cols = []
+            for e in parsed.args.get("group").expressions:
+                col_name = e.name if hasattr(e, "name") else ""
+                if col_name and col_name in df.columns:
+                    group_by_cols.append(col_name)
+                else:
+                    # Function expression (e.g. DATETIME_TRUNC) — find
+                    # the matching alias in the SELECT clause.
+                    expr_sql = e.sql()
+                    matched = False
+                    for p in parsed.expressions:
+                        if isinstance(p, exp.Alias) and p.this.sql() == expr_sql:
+                            group_by_cols.append(p.alias)
+                            matched = True
+                            break
+                    if not matched:
+                        group_by_cols.append(col_name)
+
+            # Convert unhashable types (lists, dicts) to hashable types for groupby.
+            # Datastore keys are stored as lists of dicts, GeoPoints as dicts.
             converted_cols = {}
             for col in group_by_cols:
                 if col in df.columns:
-                    # Check if any values are lists
                     sample = df[col].dropna().head(1)
                     if len(sample) > 0 and isinstance(sample.iloc[0], list):
-                        # Convert list to tuple for hashing
                         converted_cols[col] = df[col].apply(
                             lambda x: tuple(
-                                tuple(d.items()) if isinstance(d, dict) else d
+                                tuple(sorted(d.items()))
+                                if isinstance(d, dict)
+                                else d
                                 for d in x
                             )
                             if isinstance(x, list)
                             else x
                         )
                         df[col] = converted_cols[col]
+                    elif len(sample) > 0 and isinstance(sample.iloc[0], dict):
+                        converted_cols[col] = df[col].apply(
+                            lambda x: tuple(sorted(x.items()))
+                            if isinstance(x, dict)
+                            else x
+                        )
+                        df[col] = converted_cols[col]
 
             col_renames = {}
             for p in parsed.expressions:
-                if isinstance(p.this, exp.AggFunc):
-                    original_col_name = (
-                        p.this.expressions[0].name
-                        if p.this.expressions
-                        else p.this.this.this.name
+                if isinstance(p, exp.Alias) and p.find(exp.AggFunc):
+                    agg_func = p.this
+                    agg_func_name = agg_func.key.lower()
+                    # Map SQL aggregate names to pandas equivalents
+                    sql_to_pandas_agg = {"avg": "mean"}
+                    agg_func_name = sql_to_pandas_agg.get(
+                        agg_func_name, agg_func_name
                     )
-                    agg_func_name = p.this.key.lower()
+                    if agg_func.expressions:
+                        original_col_name = agg_func.expressions[0].name
+                    elif isinstance(agg_func.this, exp.Distinct):
+                        # COUNT(DISTINCT col) - column is inside Distinct
+                        original_col_name = (
+                            agg_func.this.expressions[0].name
+                        )
+                        # Use pandas nunique for COUNT(DISTINCT)
+                        agg_func_name = "nunique"
+                    elif agg_func.this is not None and hasattr(
+                        agg_func.this, "name"
+                    ):
+                        original_col_name = agg_func.this.name
+                    else:
+                        # Fallback for COUNT(*) or unknown structures
+                        original_col_name = group_by_cols[0]
                     desired_sql_alias = p.alias_or_name
                     col_renames = {"temp_agg": desired_sql_alias}
                     df = (
@@ -1315,11 +1681,61 @@ class Cursor:
                         .rename(columns=col_renames)
                     )
 
+        elif has_agg:
+            # Aggregation without GROUP BY (e.g., SELECT COUNT(*) FROM table)
+            result_data: Dict[str, Any] = {}
+            for p in parsed.expressions:
+                if not isinstance(p, exp.Alias) or not p.find(exp.AggFunc):
+                    continue
+                agg_func = p.this
+                agg_func_name = agg_func.key.lower()
+                alias = p.alias_or_name
+
+                if agg_func_name == "count":
+                    if isinstance(agg_func.this, exp.Star):
+                        result_data[alias] = len(df)
+                    elif isinstance(agg_func.this, exp.Distinct):
+                        col_name = agg_func.this.expressions[0].name
+                        result_data[alias] = df[col_name].nunique()
+                    elif agg_func.expressions:
+                        col_name = agg_func.expressions[0].name
+                        result_data[alias] = df[col_name].count()
+                    else:
+                        result_data[alias] = len(df)
+                elif agg_func_name == "sum":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].sum()
+                elif agg_func_name == "avg":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].mean()
+                elif agg_func_name == "min":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].min()
+                elif agg_func_name == "max":
+                    col_name = agg_func.this.name if agg_func.this else agg_func.expressions[0].name
+                    result_data[alias] = df[col_name].max()
+                else:
+                    result_data[alias] = None
+
+            df = pd.DataFrame([result_data])
+
         if parsed.args.get("order"):
             order_by_cols = [e.this.name for e in parsed.args["order"].expressions]
             ascending = [
                 not e.args.get("desc", False) for e in parsed.args["order"].expressions
             ]
+            # Convert uncomparable types (dicts, lists) to strings for sorting.
+            # Datastore keys are lists of dicts and GeoPoints are dicts, which
+            # cannot be compared with < in Python 3.
+            for col in order_by_cols:
+                if col in df.columns:
+                    sample = df[col].dropna().head(1)
+                    if len(sample) > 0 and isinstance(
+                        sample.iloc[0], (dict, list)
+                    ):
+                        df[col] = df[col].apply(
+                            lambda x: str(x) if isinstance(x, (dict, list)) else x
+                        )
             df = df.sort_values(by=order_by_cols, ascending=ascending)
 
         if parsed.args.get("limit"):
@@ -1378,6 +1794,19 @@ class Cursor:
             raise Error("Cursor is closed.")
         return list(self._query_rows)
 
+    def fetchmany(self, size=None):
+        if self._closed:
+            raise Error("Cursor is closed.")
+        if size is None:
+            size = self.arraysize or 1
+        results = []
+        for _ in range(size):
+            try:
+                results.append(next(self._query_rows))
+            except StopIteration:
+                break
+        return results
+
     def fetchone(self):
         if self._closed:
             raise Error("Cursor is closed.")
@@ -1433,13 +1862,90 @@ class Cursor:
         Convert SQL statements to GQL-compatible format.
 
         GQL (Google Query Language) is similar to SQL but has its own syntax.
-        This method should preserve GQL syntax and only make minimal transformations.
-        We avoid using sqlglot parsing here because it transforms GQL-specific
-        syntax incorrectly (e.g., COUNT(*) -> COUNT("*"), != -> <>).
+        This method reverses transformations applied by Superset's sqlglot
+        processing (BigQuery dialect) and makes other adjustments for GQL
+        compatibility.
         """
         # AGGREGATE queries are valid GQL - pass through directly
         if statement.strip().upper().startswith("AGGREGATE"):
             return statement
+
+        # Normalize whitespace: sqlglot pretty-prints with newlines which
+        # breaks position-based string operations (find, regex).
+        statement = re.sub(r"\s+", " ", statement).strip()
+
+        # === Reverse sqlglot / BigQuery dialect transformations ===
+
+        # 1. Convert <> back to != (sqlglot BigQuery dialect converts != to <>)
+        #    GQL uses != for not-equals comparisons.
+        statement = re.sub(r"<>", "!=", statement)
+
+        # 2. Fix NOT ... IN -> ... NOT IN
+        #    sqlglot converts "col NOT IN (...)" to "NOT col IN (...)"
+        #    GQL expects "col NOT IN (...)"
+        statement = re.sub(
+            r"\bNOT\s+(\w+)\s+IN\s*\(",
+            r"\1 NOT IN (",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 3. Strip ROW_NUMBER() OVER (...) added by sqlglot for DISTINCT ON
+        #    BigQuery dialect converts "SELECT DISTINCT ON (col) * FROM t"
+        #    to "SELECT *, ROW_NUMBER() OVER (PARTITION BY col ...) AS _row_... FROM t"
+        #    We strip the ROW_NUMBER expression and any trailing WHERE _row_... = 1
+        statement = re.sub(
+            r",\s*ROW_NUMBER\s*\(\s*\)\s*OVER\s*\([^)]*\)\s*(?:AS\s+\w+)?",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Also remove the WHERE _row_number = 1 subquery wrapper if present
+        statement = re.sub(
+            r"\bWHERE\s+_row_\w+\s*=\s*1\b",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 4. Fix IN clause syntax for GQL
+        #    a) Convert square bracket arrays: IN ['val'] -> IN ARRAY('val')
+        #    b) Convert parenthesized lists: IN ('val1', 'val2') -> IN ARRAY('val1', 'val2')
+        #    GQL requires the ARRAY keyword: "name IN ARRAY('val1', 'val2')"
+        #    NOT IN also needs: "name NOT IN ARRAY('val1', 'val2')"
+        statement = re.sub(
+            r"\bIN\s*\[([^\]]*)\]",
+            r"IN ARRAY(\1)",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Convert IN (...) to IN ARRAY(...) but don't double-convert IN ARRAY(...)
+        statement = re.sub(
+            r"\bIN\s*\((?![\s]*SELECT\b)",
+            "IN ARRAY(",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Fix double ARRAY: if original was already ARRAY, we'd get IN ARRAY(ARRAY(...)
+        statement = re.sub(
+            r"\bARRAY\s*\(\s*ARRAY\s*\(",
+            "ARRAY(",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 5. Fix WHERE NULL (from sqlglot optimizing "col = NULL" to "NULL")
+        #    sqlglot treats "col = NULL" as always-false and collapses to NULL.
+        #    We can't recover the original column, but if the WHERE clause is
+        #    just "WHERE NULL", remove it since it would return no results.
+        statement = re.sub(
+            r"\bWHERE\s+NULL\b",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # === GQL-specific transformations ===
 
         # Handle LIMIT FIRST(offset, count) syntax
         # Convert to LIMIT <count> OFFSET <offset>
@@ -1474,7 +1980,6 @@ class Cursor:
         )
 
         # Convert table.id in SELECT clause to __key__
-        # Pattern: table.id AS alias -> __key__ AS alias
         if table_name:
             statement = re.sub(
                 rf"\b{table_name}\.id\b",
@@ -1484,9 +1989,6 @@ class Cursor:
             )
 
         # Handle bare 'id' references for GQL compatibility
-        # GQL doesn't support mixing __key__ with property projections in SELECT,
-        # so remove id/__key__ from the SELECT column list. The key is always
-        # included in the entity response metadata and handled by ParseEntity.
         upper_stmt = statement.upper()
         from_pos = upper_stmt.find(" FROM ")
         if from_pos > 0:
@@ -1512,10 +2014,8 @@ class Cursor:
                 ]
 
                 if not non_key_cols:
-                    # id/__key__ is the only column -> keys-only query
                     select_clause = prefix + "__key__"
                 elif len(non_key_cols) < len(cols):
-                    # id/__key__ mixed with other columns -> remove it
                     select_clause = prefix + ", ".join(non_key_cols)
 
             # Convert 'id' to '__key__' in WHERE/ORDER BY/etc.
@@ -1529,9 +2029,9 @@ class Cursor:
                 r"\bid\b", "__key__", statement, flags=re.IGNORECASE
             )
 
-        # Datastore restriction: properties in equality (=) filters cannot be
-        # projected. When this conflict exists, use SELECT * instead and let
-        # ParseEntity handle column filtering from the full entity response.
+        # Datastore restriction: projection queries with WHERE clauses require
+        # composite indexes. Convert to SELECT * to avoid this requirement and
+        # let ParseEntity handle column filtering from the full entity response.
         upper_check = statement.upper()
         from_check_pos = upper_check.find(" FROM ")
         where_check_pos = upper_check.find(" WHERE ")
@@ -1544,21 +2044,10 @@ class Cursor:
                 and select_cols_str.upper() != "__KEY__"
                 and not select_cols_str.upper().startswith("DISTINCT")
             ):
-                projected = {c.strip().lower() for c in select_cols_str.split(",")}
-                where_part = statement[where_check_pos + 7:]
-                eq_cols = {
-                    m.lower()
-                    for m in re.findall(
-                        r"\b(\w+)\s*(?<![><!])=(?![=>])", where_part
-                    )
-                }
-                if projected & eq_cols:
-                    statement = "SELECT * " + statement[from_check_pos + 1:]
+                statement = "SELECT * " + statement[from_check_pos + 1:]
 
-        # Also handle just "id" column references in WHERE clauses
-        # Pattern: WHERE ... id = <value> -> WHERE ... __key__ = KEY('table', <value>)
+        # Handle id = <number> in WHERE clauses -> KEY() syntax
         if table_name:
-            # Match WHERE id = <number>
             id_where_match = re.search(
                 r"\bWHERE\b.*\b(?:id|__key__)\s*=\s*(\d+)",
                 statement,
@@ -1566,8 +2055,6 @@ class Cursor:
             )
             if id_where_match:
                 id_value = id_where_match.group(1)
-                # Replace the WHERE condition with KEY() syntax
-                # Note: GQL KEY() expects unquoted table name
                 statement = re.sub(
                     r"\b(?:id|__key__)\s*=\s*\d+",
                     f"__key__ = KEY({table_name}, {id_value})",
@@ -1576,28 +2063,22 @@ class Cursor:
                 )
 
         # Remove column aliases (AS alias_name) - GQL doesn't support them
-        # Pattern: column AS alias -> column
+        # But preserve AS inside AGGREGATE ... AS ... OVER syntax
         statement = re.sub(
             r"\bAS\s+\w+", "", statement, flags=re.IGNORECASE
         )
 
         # Remove table prefix from column names (table.column -> column)
-        # But preserve __key__ and KEY() function
         if table_name:
             statement = re.sub(
                 rf"\b{table_name}\.(?!__)", "", statement, flags=re.IGNORECASE
             )
 
-        # Clean up extra spaces
+        # Clean up extra spaces and artifacts
         statement = re.sub(r"\s+", " ", statement).strip()
-        statement = re.sub(r",\s*,", ",", statement)  # Remove empty commas
-        statement = re.sub(r"\s*,\s*\bFROM\b", " FROM", statement)  # Clean comma before FROM
+        statement = re.sub(r",\s*,", ",", statement)
+        statement = re.sub(r"\s*,\s*\bFROM\b", " FROM", statement)
 
-        # GQL queries should be passed through as-is
-        # GQL supports: SELECT, FROM, WHERE, ORDER BY, LIMIT, OFFSET, DISTINCT
-        # GQL-specific: KEY(), DATETIME(), BLOB(), ARRAY(), PROJECT(), NAMESPACE()
-        # GQL-specific: HAS ANCESTOR, HAS DESCENDANT, CONTAINS
-        # GQL-specific: __key__
         return statement
 
     def close(self):
