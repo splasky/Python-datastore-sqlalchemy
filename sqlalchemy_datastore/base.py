@@ -17,26 +17,24 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import logging
-from typing import Any, List, Optional
 from concurrent import futures
+from typing import Any, List, Optional
 
-from . import _types
-from . import datastore_dbapi
-from ._helpers import create_datastore_client
-from .parse_url import parse_url
-
-from sqlalchemy.engine import default, Connection
+from google.cloud import firestore_admin_v1
+from google.cloud.firestore_admin_v1.types import Database
+from google.oauth2 import service_account
 from sqlalchemy import exc
-from sqlalchemy.sql import Select
+from sqlalchemy.engine import Connection, default
 from sqlalchemy.engine.interfaces import (
     # DBAPICursor,
     # _DBAPISingleExecuteParams,
     ExecutionContext,
 )
+from sqlalchemy.sql import Select
 
-from google.cloud import firestore_admin_v1
-from google.cloud.firestore_admin_v1.types import Database
-from google.oauth2 import service_account
+from . import _types, datastore_dbapi
+from ._helpers import create_datastore_client
+from .parse_url import parse_url
 
 logger = logging.getLogger("sqlalchemy.dialects.CloudDatastore")
 

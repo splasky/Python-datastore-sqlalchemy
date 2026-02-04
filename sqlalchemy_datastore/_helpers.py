@@ -17,19 +17,19 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import base64
 import functools
-import re
+import json
 import os
+import re
 from typing import Optional, Tuple
 
-from google.api_core import client_info
 import google.auth
+import sqlalchemy
+from google.api_core import client_info
+from google.auth.credentials import Credentials
 from google.cloud import datastore
 from google.oauth2 import service_account
-import sqlalchemy
-import base64
-import json
-
 
 USER_AGENT_TEMPLATE = "sqlalchemy/{}"
 SCOPES = (
@@ -59,7 +59,7 @@ def create_datastore_client(
     project_id: Optional[str] = None,
     user_agent: Optional[client_info.ClientInfo] = None,
     database: Optional[str] = None
-) -> Tuple[datastore.Client, service_account.Credentials]:
+) -> Tuple[datastore.Client, Optional[Credentials]]:
     """Construct a BigQuery client object.
 
     Args:
