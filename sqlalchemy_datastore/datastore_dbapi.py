@@ -1665,12 +1665,15 @@ class Cursor:
                         )
                         # Use pandas nunique for COUNT(DISTINCT)
                         agg_func_name = "nunique"
+                    elif isinstance(agg_func.this, exp.Star):
+                        # COUNT(*) - use first group_by column for counting
+                        original_col_name = group_by_cols[0]
                     elif agg_func.this is not None and hasattr(
                         agg_func.this, "name"
                     ):
                         original_col_name = agg_func.this.name
                     else:
-                        # Fallback for COUNT(*) or unknown structures
+                        # Fallback for unknown structures
                         original_col_name = group_by_cols[0]
                     desired_sql_alias = p.alias_or_name
                     col_renames = {"temp_agg": desired_sql_alias}
