@@ -638,18 +638,17 @@ class Cursor:
             return requests.post(url, json=body)
 
     def _needs_client_side_filter(self, statement: str) -> bool:
-        """Check if the query needs client-side filtering due to unsupported ops."""
+        """Check if the query needs client-side filtering due to unsupported ops.
+
+        Note: This should be called on the CONVERTED GQL statement (after
+        _convert_sql_to_gql), since that method handles reversing sqlglot
+        transformations like <> -> != and NOT col IN -> col NOT IN.
+        GQL natively supports: =, <, >, <=, >=, !=, IN, NOT IN, CONTAINS.
+        """
         upper = statement.upper()
-        # Check for operators not well-supported by emulator
         unsupported_patterns = [
-            r"\bOR\b",  # OR conditions
-            r"!=",  # Not equals
-            r"<>",  # Not equals (alternate)
-            r"\bNOT\s+IN\b",  # NOT IN
-            r"\bIN\s*\(",  # IN clause (emulator has issues)
-            r"\bHAS\s+ANCESTOR\b",  # HAS ANCESTOR
-            r"\bHAS\s+DESCENDANT\b",  # HAS DESCENDANT
-            r"\bBLOB\s*\(",  # BLOB literal (emulator doesn't support)
+            r"\bOR\b",  # OR conditions need client-side evaluation
+            r"\bBLOB\s*\(",  # BLOB literal (escaping issues)
         ]
         for pattern in unsupported_patterns:
             if re.search(pattern, upper):
@@ -791,6 +790,26 @@ class Cursor:
         """Evaluate a simple comparison condition."""
         condition = condition.strip()
 
+        # Handle __key__ = KEY(kind, value) comparison
+        # Entity key is stored as "key" in context (from ParseEntity)
+        key_eq_match = re.match(
+            r"__key__\s*=\s*KEY\s*\(\s*\w+\s*,\s*(?:'([^']*)'|(\d+))\s*\)",
+            condition,
+            re.IGNORECASE,
+        )
+        if key_eq_match:
+            key_name = key_eq_match.group(1)
+            key_id = key_eq_match.group(2)
+            field_val = context.get("key") or context.get("__key__")
+            if isinstance(field_val, list) and len(field_val) > 0:
+                last_path = field_val[-1]
+                if isinstance(last_path, dict):
+                    if key_name is not None:
+                        return last_path.get("name") == key_name
+                    if key_id is not None:
+                        return str(last_path.get("id")) == key_id
+            return False
+
         # Handle BLOB equality (before generic handlers, since BLOB literal
         # would confuse the generic _parse_literal path)
         blob_eq_match = re.match(
@@ -828,9 +847,10 @@ class Cursor:
                 return field_val != blob_bytes
             return True
 
-        # Handle NOT IN
+        # Handle NOT IN / NOT IN ARRAY
         not_in_match = re.match(
-            r"(\w+)\s+NOT\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE
+            r"(\w+)\s+NOT\s+IN\s+(?:ARRAY\s*)?\(([^)]+)\)",
+            condition, re.IGNORECASE,
         )
         if not_in_match:
             field = not_in_match.group(1)
@@ -839,8 +859,11 @@ class Cursor:
             field_val = context.get(field)
             return field_val not in values
 
-        # Handle IN
-        in_match = re.match(r"(\w+)\s+IN\s*\(([^)]+)\)", condition, re.IGNORECASE)
+        # Handle IN / IN ARRAY
+        in_match = re.match(
+            r"(\w+)\s+IN\s+(?:ARRAY\s*)?\(([^)]+)\)",
+            condition, re.IGNORECASE,
+        )
         if in_match:
             field = in_match.group(1)
             values_str = in_match.group(2)
@@ -863,7 +886,10 @@ class Cursor:
             value = self._parse_literal(gte_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val >= value
+                try:
+                    return field_val >= value
+                except TypeError:
+                    return False
             return False
 
         # Handle <=
@@ -873,7 +899,10 @@ class Cursor:
             value = self._parse_literal(lte_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val <= value
+                try:
+                    return field_val <= value
+                except TypeError:
+                    return False
             return False
 
         # Handle >
@@ -883,7 +912,10 @@ class Cursor:
             value = self._parse_literal(gt_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val > value
+                try:
+                    return field_val > value
+                except TypeError:
+                    return False
             return False
 
         # Handle <
@@ -893,7 +925,10 @@ class Cursor:
             value = self._parse_literal(lt_match.group(2).strip())
             field_val = context.get(field)
             if field_val is not None and value is not None:
-                return field_val < value
+                try:
+                    return field_val < value
+                except TypeError:
+                    return False
             return False
 
         # Handle =
@@ -917,6 +952,26 @@ class Cursor:
     def _parse_literal(self, literal: str) -> Any:
         """Parse a literal value from string."""
         literal = literal.strip()
+        # DATETIME literal: DATETIME('2023-01-01T00:00:00Z')
+        datetime_match = re.match(
+            r"DATETIME\s*\(\s*'([^']*)'\s*\)", literal, re.IGNORECASE
+        )
+        if datetime_match:
+            timestamp_str = datetime_match.group(1)
+            if timestamp_str.endswith("Z"):
+                timestamp_str = timestamp_str.replace("Z", "+00:00")
+            # Normalize fractional seconds to 6 digits for Python 3.10
+            # compatibility (fromisoformat only handles 0, 3, or 6 digits).
+            frac_match = re.match(
+                r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(.*)",
+                timestamp_str,
+            )
+            if frac_match:
+                frac = frac_match.group(2)[:6].ljust(6, "0")
+                timestamp_str = (
+                    frac_match.group(1) + "." + frac + frac_match.group(3)
+                )
+            return datetime.fromisoformat(timestamp_str)
         # String literal
         if (literal.startswith("'") and literal.endswith("'")) or (
             literal.startswith('"') and literal.endswith('"')
