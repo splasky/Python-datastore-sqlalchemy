@@ -1456,13 +1456,90 @@ class Cursor:
         Convert SQL statements to GQL-compatible format.
 
         GQL (Google Query Language) is similar to SQL but has its own syntax.
-        This method should preserve GQL syntax and only make minimal transformations.
-        We avoid using sqlglot parsing here because it transforms GQL-specific
-        syntax incorrectly (e.g., COUNT(*) -> COUNT("*"), != -> <>).
+        This method reverses transformations applied by Superset's sqlglot
+        processing (BigQuery dialect) and makes other adjustments for GQL
+        compatibility.
         """
         # AGGREGATE queries are valid GQL - pass through directly
         if statement.strip().upper().startswith("AGGREGATE"):
             return statement
+
+        # Normalize whitespace: sqlglot pretty-prints with newlines which
+        # breaks position-based string operations (find, regex).
+        statement = re.sub(r"\s+", " ", statement).strip()
+
+        # === Reverse sqlglot / BigQuery dialect transformations ===
+
+        # 1. Convert <> back to != (sqlglot BigQuery dialect converts != to <>)
+        #    GQL uses != for not-equals comparisons.
+        statement = re.sub(r"<>", "!=", statement)
+
+        # 2. Fix NOT ... IN -> ... NOT IN
+        #    sqlglot converts "col NOT IN (...)" to "NOT col IN (...)"
+        #    GQL expects "col NOT IN (...)"
+        statement = re.sub(
+            r"\bNOT\s+(\w+)\s+IN\s*\(",
+            r"\1 NOT IN (",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 3. Strip ROW_NUMBER() OVER (...) added by sqlglot for DISTINCT ON
+        #    BigQuery dialect converts "SELECT DISTINCT ON (col) * FROM t"
+        #    to "SELECT *, ROW_NUMBER() OVER (PARTITION BY col ...) AS _row_... FROM t"
+        #    We strip the ROW_NUMBER expression and any trailing WHERE _row_... = 1
+        statement = re.sub(
+            r",\s*ROW_NUMBER\s*\(\s*\)\s*OVER\s*\([^)]*\)\s*(?:AS\s+\w+)?",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Also remove the WHERE _row_number = 1 subquery wrapper if present
+        statement = re.sub(
+            r"\bWHERE\s+_row_\w+\s*=\s*1\b",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 4. Fix IN clause syntax for GQL
+        #    a) Convert square bracket arrays: IN ['val'] -> IN ARRAY('val')
+        #    b) Convert parenthesized lists: IN ('val1', 'val2') -> IN ARRAY('val1', 'val2')
+        #    GQL requires the ARRAY keyword: "name IN ARRAY('val1', 'val2')"
+        #    NOT IN also needs: "name NOT IN ARRAY('val1', 'val2')"
+        statement = re.sub(
+            r"\bIN\s*\[([^\]]*)\]",
+            r"IN ARRAY(\1)",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Convert IN (...) to IN ARRAY(...) but don't double-convert IN ARRAY(...)
+        statement = re.sub(
+            r"\bIN\s*\((?![\s]*SELECT\b)",
+            "IN ARRAY(",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        # Fix double ARRAY: if original was already ARRAY, we'd get IN ARRAY(ARRAY(...)
+        statement = re.sub(
+            r"\bARRAY\s*\(\s*ARRAY\s*\(",
+            "ARRAY(",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # 5. Fix WHERE NULL (from sqlglot optimizing "col = NULL" to "NULL")
+        #    sqlglot treats "col = NULL" as always-false and collapses to NULL.
+        #    We can't recover the original column, but if the WHERE clause is
+        #    just "WHERE NULL", remove it since it would return no results.
+        statement = re.sub(
+            r"\bWHERE\s+NULL\b",
+            "",
+            statement,
+            flags=re.IGNORECASE,
+        )
+
+        # === GQL-specific transformations ===
 
         # Handle LIMIT FIRST(offset, count) syntax
         # Convert to LIMIT <count> OFFSET <offset>
@@ -1497,7 +1574,6 @@ class Cursor:
         )
 
         # Convert table.id in SELECT clause to __key__
-        # Pattern: table.id AS alias -> __key__ AS alias
         if table_name:
             statement = re.sub(
                 rf"\b{table_name}\.id\b",
@@ -1507,9 +1583,6 @@ class Cursor:
             )
 
         # Handle bare 'id' references for GQL compatibility
-        # GQL doesn't support mixing __key__ with property projections in SELECT,
-        # so remove id/__key__ from the SELECT column list. The key is always
-        # included in the entity response metadata and handled by ParseEntity.
         upper_stmt = statement.upper()
         from_pos = upper_stmt.find(" FROM ")
         if from_pos > 0:
@@ -1535,10 +1608,8 @@ class Cursor:
                 ]
 
                 if not non_key_cols:
-                    # id/__key__ is the only column -> keys-only query
                     select_clause = prefix + "__key__"
                 elif len(non_key_cols) < len(cols):
-                    # id/__key__ mixed with other columns -> remove it
                     select_clause = prefix + ", ".join(non_key_cols)
 
             # Convert 'id' to '__key__' in WHERE/ORDER BY/etc.
@@ -1552,9 +1623,9 @@ class Cursor:
                 r"\bid\b", "__key__", statement, flags=re.IGNORECASE
             )
 
-        # Datastore restriction: properties in equality (=) filters cannot be
-        # projected. When this conflict exists, use SELECT * instead and let
-        # ParseEntity handle column filtering from the full entity response.
+        # Datastore restriction: projection queries with WHERE clauses require
+        # composite indexes. Convert to SELECT * to avoid this requirement and
+        # let ParseEntity handle column filtering from the full entity response.
         upper_check = statement.upper()
         from_check_pos = upper_check.find(" FROM ")
         where_check_pos = upper_check.find(" WHERE ")
@@ -1567,21 +1638,10 @@ class Cursor:
                 and select_cols_str.upper() != "__KEY__"
                 and not select_cols_str.upper().startswith("DISTINCT")
             ):
-                projected = {c.strip().lower() for c in select_cols_str.split(",")}
-                where_part = statement[where_check_pos + 7:]
-                eq_cols = {
-                    m.lower()
-                    for m in re.findall(
-                        r"\b(\w+)\s*(?<![><!])=(?![=>])", where_part
-                    )
-                }
-                if projected & eq_cols:
-                    statement = "SELECT * " + statement[from_check_pos + 1:]
+                statement = "SELECT * " + statement[from_check_pos + 1:]
 
-        # Also handle just "id" column references in WHERE clauses
-        # Pattern: WHERE ... id = <value> -> WHERE ... __key__ = KEY('table', <value>)
+        # Handle id = <number> in WHERE clauses -> KEY() syntax
         if table_name:
-            # Match WHERE id = <number>
             id_where_match = re.search(
                 r"\bWHERE\b.*\b(?:id|__key__)\s*=\s*(\d+)",
                 statement,
@@ -1589,8 +1649,6 @@ class Cursor:
             )
             if id_where_match:
                 id_value = id_where_match.group(1)
-                # Replace the WHERE condition with KEY() syntax
-                # Note: GQL KEY() expects unquoted table name
                 statement = re.sub(
                     r"\b(?:id|__key__)\s*=\s*\d+",
                     f"__key__ = KEY({table_name}, {id_value})",
@@ -1599,28 +1657,22 @@ class Cursor:
                 )
 
         # Remove column aliases (AS alias_name) - GQL doesn't support them
-        # Pattern: column AS alias -> column
+        # But preserve AS inside AGGREGATE ... AS ... OVER syntax
         statement = re.sub(
             r"\bAS\s+\w+", "", statement, flags=re.IGNORECASE
         )
 
         # Remove table prefix from column names (table.column -> column)
-        # But preserve __key__ and KEY() function
         if table_name:
             statement = re.sub(
                 rf"\b{table_name}\.(?!__)", "", statement, flags=re.IGNORECASE
             )
 
-        # Clean up extra spaces
+        # Clean up extra spaces and artifacts
         statement = re.sub(r"\s+", " ", statement).strip()
-        statement = re.sub(r",\s*,", ",", statement)  # Remove empty commas
-        statement = re.sub(r"\s*,\s*\bFROM\b", " FROM", statement)  # Clean comma before FROM
+        statement = re.sub(r",\s*,", ",", statement)
+        statement = re.sub(r"\s*,\s*\bFROM\b", " FROM", statement)
 
-        # GQL queries should be passed through as-is
-        # GQL supports: SELECT, FROM, WHERE, ORDER BY, LIMIT, OFFSET, DISTINCT
-        # GQL-specific: KEY(), DATETIME(), BLOB(), ARRAY(), PROJECT(), NAMESPACE()
-        # GQL-specific: HAS ANCESTOR, HAS DESCENDANT, CONTAINS
-        # GQL-specific: __key__
         return statement
 
     def close(self):
