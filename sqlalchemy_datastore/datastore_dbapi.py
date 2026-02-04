@@ -1388,6 +1388,19 @@ class Cursor:
             raise Error("Cursor is closed.")
         return list(self._query_rows)
 
+    def fetchmany(self, size=None):
+        if self._closed:
+            raise Error("Cursor is closed.")
+        if size is None:
+            size = self.arraysize or 1
+        results = []
+        for _ in range(size):
+            try:
+                results.append(next(self._query_rows))
+            except StopIteration:
+                break
+        return results
+
     def fetchone(self):
         if self._closed:
             raise Error("Cursor is closed.")
