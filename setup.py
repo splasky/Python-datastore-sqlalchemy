@@ -39,7 +39,7 @@ setup(
     version=VERSION,
     description="SQLAlchemy dialect for google cloud datastore",
     long_description=open(readme).read(),
-    long_description_content_type="text/x-rst",
+    long_description_content_type="text/markdown",
     url="https://github.com/splasky/python-datastore-sqlalchemy",
     author="HY Chang(splasky)",
     author_email="hychang.1997.tw@gmail.com",
