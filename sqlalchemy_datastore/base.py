@@ -26,11 +26,8 @@ from google.oauth2 import service_account
 from sqlalchemy import exc
 from sqlalchemy.engine import Connection, default
 from sqlalchemy.engine.interfaces import (
-    # DBAPICursor,
-    # _DBAPISingleExecuteParams,
     ExecutionContext,
 )
-from sqlalchemy.sql import Select
 
 from . import _types, datastore_dbapi
 from ._helpers import create_datastore_client
@@ -242,21 +239,6 @@ class CloudDatastoreDialect(default.DefaultDialect):
         with futures.ThreadPoolExecutor() as executor:
             columns = list(executor.map(process_property, properties))
         return columns
-
-    def _contains_select_subquery(self, node) -> bool:
-        """
-        Check the AST node contains select subquery
-        """
-        if isinstance(node, Select):
-            for child in node.get_children():
-                if isinstance(child, Select) or self._contains_select_subquery(child):
-                    return True
-
-        for child in node.get_children():
-            if isinstance(child, Select) or self._contains_select_subquery(child):
-                return True
-
-        return False
 
     def do_execute(
         self,
