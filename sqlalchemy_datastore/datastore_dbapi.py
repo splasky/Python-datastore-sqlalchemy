@@ -931,9 +931,14 @@ class Cursor:
         # This is a simplified evaluator for common patterns
         try:
             return self._eval_condition(context, where_clause)
-        except Exception:
-            # If evaluation fails, include the row (fail open)
-            return True
+        except Exception as e:
+            logging.warning(
+                "Client-side WHERE evaluation failed for clause '%s': %s. "
+                "Row will be excluded (fail closed).",
+                where_clause,
+                e,
+            )
+            return False
 
     def _eval_condition(self, context: Dict[str, Any], condition: str) -> bool:
         """Evaluate a single condition or compound condition."""
