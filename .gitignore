@@ -13,3 +13,9 @@ build
 .DS_Store
 test_credentials.json
 *.egg-info
+.coverage
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+env
