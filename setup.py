@@ -22,23 +22,24 @@ import re
 
 from setuptools import setup, find_packages
 
-v = open(
+with open(
     os.path.join(os.path.dirname(__file__), "sqlalchemy_datastore", "__init__.py")
-)
-version_match = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read())
+) as v:
+    version_match = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read())
 if not version_match:
     raise RuntimeError("Unable to find version string in __init__.py.")
 VERSION = version_match.group(1)
-v.close()
 
 readme = os.path.join(os.path.dirname(__file__), "README.md")
+with open(readme) as f:
+    long_description = f.read()
 
 
 setup(
     name="python-datastore-sqlalchemy",
     version=VERSION,
     description="SQLAlchemy dialect for google cloud datastore",
-    long_description=open(readme).read(),
+    long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/splasky/python-datastore-sqlalchemy",
     author="HY Chang(splasky)",
