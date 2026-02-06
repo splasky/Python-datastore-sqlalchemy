@@ -17,11 +17,9 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 import logging
-from concurrent import futures
 from typing import Any, List, Optional
 
 from google.cloud import firestore_admin_v1
-from google.cloud.firestore_admin_v1.types import Database
 from google.oauth2 import service_account
 from sqlalchemy import exc
 from sqlalchemy.engine import Connection, default
@@ -179,18 +177,11 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
         try:
             list_database_resp = client.list_databases(parent=parent)
-
-            def get_database_short_name(database: Database) -> Optional[List[str]]:
-                full_name = database.name
-                if full_name:
-                    return full_name.split("/")[-1]
-                return None
-
-            with futures.ThreadPoolExecutor() as executor:
-                schemas = list(
-                    executor.map(get_database_short_name, list_database_resp.databases)
-                )
-
+            schemas = [
+                full_name.split("/")[-1]
+                for db in list_database_resp.databases
+                if (full_name := db.name)
+            ]
             return schemas
         except Exception as e:
             logging.error(e)
@@ -203,42 +194,34 @@ class CloudDatastoreDialect(default.DefaultDialect):
         query = client.query(kind="__kind__")
         kinds = list(query.fetch())
 
-        def get_kind_name(kind):
-            return (
-                name
-                if (name := getattr(getattr(kind, "key", None), "name", None))
-                is not None
-                and isinstance(name, str)
-                and not name.startswith("__")
-                else None
-            )
-
-        with futures.ThreadPoolExecutor() as executor:
-            result = list(executor.map(get_kind_name, kinds))
-
-        return [t for t in result if t is not None]
+        return [
+            name
+            for kind in kinds
+            if (name := getattr(getattr(kind, "key", None), "name", None))
+            is not None
+            and isinstance(name, str)
+            and not name.startswith("__")
+        ]
 
     def get_columns(
         self, connection: Connection, table_name: str, schema: str | None = None, **kw
     ):
-        """Retrieve column information from the database with optimized parallel processing."""
+        """Retrieve column information from the database."""
         client = self._client
         query = client.query(kind="__Stat_PropertyType_PropertyName_Kind__")
         query.add_filter("kind_name", "=", table_name)
         properties = list(query.fetch())
 
-        def process_property(property):
-            return {
-                "name": property["property_name"],
-                "type": _types._property_type[property["property_type"]],
+        return [
+            {
+                "name": prop["property_name"],
+                "type": _types._property_type[prop["property_type"]],
                 "nullable": True,
                 "comment": "",
                 "default": None,
             }
-
-        with futures.ThreadPoolExecutor() as executor:
-            columns = list(executor.map(process_property, properties))
-        return columns
+            for prop in properties
+        ]
 
     def do_execute(
         self,
