@@ -157,10 +157,10 @@ class CloudDatastoreDialect(default.DefaultDialect):
 
         self._client = client
         self.credentials = credentials
-        setattr(self._client, "credentials_path", self.credentials_path)
-        setattr(self._client, "credentials_info", self.credentials_info)
-        setattr(self._client, "credentials_base64", self.credentials_base64)
-        setattr(self._client, "scoped_credentials", credentials)
+        self._client.credentials_path = self.credentials_path
+        self._client.credentials_info = self.credentials_info
+        self._client.credentials_base64 = self.credentials_base64
+        self._client.scoped_credentials = credentials
         return ([], {"client": client})
 
     def get_schema_names(self, connection: Connection, **kw) -> List[str]:
