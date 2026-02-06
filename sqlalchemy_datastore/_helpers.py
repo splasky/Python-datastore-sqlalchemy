@@ -60,21 +60,23 @@ def create_datastore_client(
     user_agent: Optional[client_info.ClientInfo] = None,
     database: Optional[str] = None
 ) -> Tuple[datastore.Client, Optional[Credentials]]:
-    """Construct a BigQuery client object.
+    """Construct a Datastore client object.
 
     Args:
-        credentials_info Optional[dict]:
-        credentials_path Optional[str]:
-        credentials_base64 Optional[str]:
-        location (Optional[str]):
-            Default location for jobs / datasets / tables.
+        credentials_info (Optional[dict]):
+            Service account info dictionary.
+        credentials_path (Optional[str]):
+            Path to a service account JSON key file.
+        credentials_base64 (Optional[str]):
+            Base64-encoded service account JSON key.
         project_id (Optional[str]):
             Project ID for the project which the client acts on behalf of.
         user_agent (Optional[google.api_core.client_info.ClientInfo]):
             The client info used to send a user-agent string along with API
-            requests. If ``None``, then default info will be used. Generally,
-            you only need to set this if you're developing your own library
-            or partner tool.
+            requests. If ``None``, then default info will be used.
+        database (Optional[str]):
+            Datastore database ID. ``None`` or ``"(default)"`` uses the
+            default database.
     """
 
     default_project = None
