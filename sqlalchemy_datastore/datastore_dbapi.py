@@ -1571,10 +1571,12 @@ class Cursor:
         self.description = list(agg_fields.values())
 
     def execute_orm(
-        self, statement: str, parameters=None, tokens: List[tokens.Token] = []
+        self, statement: str, parameters=None, tokens: Optional[List[tokens.Token]] = None
     ):
         if parameters is None:
             parameters = {}
+        if tokens is None:
+            tokens = []
 
         logging.debug(
             f"[DataStore DBAPI] Executing ORM query: {statement} with parameters: {parameters}"
