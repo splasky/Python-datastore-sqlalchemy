@@ -228,7 +228,7 @@ class Cursor:
 
         except Exception as e:
             logging.error(f"INSERT failed: {e}")
-            raise ProgrammingError(f"INSERT failed: {e}")
+            raise ProgrammingError(f"INSERT failed: {e}") from e
 
     def _execute_update(self, statement: str, parameters=None):
         """Execute an UPDATE statement using Datastore client."""
