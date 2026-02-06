@@ -83,6 +83,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.location = location
         self.identifier_preparer = self.preparer(self)
         self.dataset_id = None
+        self.database_id = None
         self.list_tables_page_size = list_tables_page_size
         self._client = None
 
@@ -124,6 +125,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
             provided_job_config,
             list_tables_page_size,
             user_supplied_client,
+            database_id,
         ) = parse_url(url)
 
         self.arraysize = arraysize or self.arraysize
@@ -133,6 +135,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self.credentials_path = credentials_path
         self.credentials_base64 = credentials_base64 or self.credentials_base64
         self.dataset_id = dataset_id
+        self.database_id = database_id
         self.billing_project_id = self.billing_project_id or self.project_id
 
         if user_supplied_client:
@@ -143,7 +146,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
                 credentials_info=self.credentials_info,
                 credentials_base64=self.credentials_base64,
                 project_id=self.billing_project_id,
-                database=None,
+                database=self.database_id,
             )
             self.project_id = self.project_id if self.project_id else client.project
             self.billing_project_id = (

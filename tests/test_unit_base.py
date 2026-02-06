@@ -17,9 +17,12 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """Unit tests for base.py CloudDatastoreDialect (no emulator required)."""
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+from sqlalchemy.engine.url import make_url
 
 from sqlalchemy_datastore import CloudDatastoreDialect, datastore_dbapi
+from sqlalchemy_datastore.parse_url import parse_url
 
 # ---------------------------------------------------------------------------
 # Dialect metadata
@@ -224,3 +227,78 @@ def test_get_table_names_empty():
 
     result = d.get_table_names(None)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# parse_url – database parameter
+# ---------------------------------------------------------------------------
+
+def test_parse_url_extracts_database():
+    url = make_url("datastore://my-project/?database=my-db")
+    result = parse_url(url)
+    assert len(result) == 10
+    assert result[9] == "my-db"
+
+
+def test_parse_url_no_database():
+    url = make_url("datastore://my-project/")
+    result = parse_url(url)
+    assert len(result) == 10
+    assert result[9] is None
+
+
+def test_parse_url_database_with_location():
+    url = make_url("datastore://my-project/?database=my-db&location=us-east1")
+    result = parse_url(url)
+    assert result[9] == "my-db"
+    assert result[1] == "us-east1"
+
+
+# ---------------------------------------------------------------------------
+# create_connect_args – database parameter
+# ---------------------------------------------------------------------------
+
+def test_create_connect_args_passes_database():
+    d = CloudDatastoreDialect()
+    url = make_url("datastore://my-project/?database=my-db")
+
+    with patch(
+        "sqlalchemy_datastore.base.create_datastore_client"
+    ) as mock_create:
+        mock_client = MagicMock()
+        mock_client.project = "my-project"
+        mock_create.return_value = (mock_client, MagicMock())
+
+        d.create_connect_args(url)
+
+        mock_create.assert_called_once_with(
+            credentials_path=None,
+            credentials_info=None,
+            credentials_base64=None,
+            project_id="my-project",
+            database="my-db",
+        )
+        assert d.database_id == "my-db"
+
+
+def test_create_connect_args_no_database():
+    d = CloudDatastoreDialect()
+    url = make_url("datastore://my-project/")
+
+    with patch(
+        "sqlalchemy_datastore.base.create_datastore_client"
+    ) as mock_create:
+        mock_client = MagicMock()
+        mock_client.project = "my-project"
+        mock_create.return_value = (mock_client, MagicMock())
+
+        d.create_connect_args(url)
+
+        mock_create.assert_called_once_with(
+            credentials_path=None,
+            credentials_info=None,
+            credentials_base64=None,
+            project_id="my-project",
+            database=None,
+        )
+        assert d.database_id is None

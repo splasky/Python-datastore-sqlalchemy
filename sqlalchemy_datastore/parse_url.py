@@ -72,6 +72,11 @@ def parse_url(url):  # noqa: C901
     credentials_base64 = None
     list_tables_page_size = None
     user_supplied_client = False
+    database = None
+
+    # database
+    if "database" in query:
+        database = query.pop("database")
 
     # location
     if "location" in query:
@@ -122,6 +127,7 @@ def parse_url(url):  # noqa: C901
                 QueryJobConfig(),
                 list_tables_page_size,
                 user_supplied_client,
+                database,
             )
         else:
             return (
@@ -134,6 +140,7 @@ def parse_url(url):  # noqa: C901
                 None,
                 list_tables_page_size,
                 user_supplied_client,
+                database,
             )
 
     job_config = QueryJobConfig()
@@ -284,4 +291,5 @@ def parse_url(url):  # noqa: C901
         job_config,
         list_tables_page_size,
         user_supplied_client,
+        database,
     )
