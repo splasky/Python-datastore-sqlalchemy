@@ -17,5 +17,5 @@ ignore_missing_imports = true
 disable_error_code = ["var-annotated", "import-untyped"]
 
 [[tool.mypy.overrides]]
-module = ["tests.*", "sqlalchemy_datastore.*"]
+module = ["tests.*"]
 ignore_errors = true
