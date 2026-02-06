@@ -63,7 +63,16 @@ setup(
     },
     packages=find_packages(include=["sqlalchemy_datastore"]),
     include_package_data=True,
-    install_requires=["sqlalchemy>=1.4.16,<3.0.0",],
+    install_requires=[
+        "sqlalchemy>=1.4.16,<3.0.0",
+        "google-cloud-datastore>=2.21.0",
+        "google-cloud-firestore>=2.21.0",
+        "google-cloud-bigquery>=3.35.0",
+        "google-auth>=2.40.0",
+        "sqlglot>=28.0.0",
+        "pandas>=2.0.0",
+        "requests",
+    ],
     zip_safe=False,
     entry_points={
         "sqlalchemy.dialects": ["datastore = sqlalchemy_datastore:CloudDatastoreDialect"]
