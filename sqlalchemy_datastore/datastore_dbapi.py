@@ -1819,11 +1819,15 @@ class Cursor:
     def fetchall(self):
         if self._closed:
             raise Error("Cursor is closed.")
+        if self._query_rows is None:
+            raise ProgrammingError("No query has been executed.")
         return list(self._query_rows)
 
     def fetchmany(self, size=None):
         if self._closed:
             raise Error("Cursor is closed.")
+        if self._query_rows is None:
+            raise ProgrammingError("No query has been executed.")
         if size is None:
             size = self.arraysize or 1
         results = []
@@ -1837,6 +1841,8 @@ class Cursor:
     def fetchone(self):
         if self._closed:
             raise Error("Cursor is closed.")
+        if self._query_rows is None:
+            raise ProgrammingError("No query has been executed.")
         try:
             return next(self._query_rows)
         except StopIteration:
