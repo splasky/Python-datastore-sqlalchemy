@@ -454,6 +454,8 @@ class Cursor:
             r"\bCOUNT_UP_TO\s*\(",
             r"\bSUM\s*\(",
             r"\bAVG\s*\(",
+            r"\bMIN\s*\(",
+            r"\bMAX\s*\(",
         ]
         for pattern in agg_patterns:
             if re.search(pattern, upper):
