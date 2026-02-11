@@ -13,9 +13,9 @@ How to use
 from sqlalchemy import *
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import *
-engine = create_engine('datastore://test-api-1', credentials='path/to/credentials.json')
+engine = create_engine("datastore://my-project/?database=my-db", credentials='path/to/credentials.json')
 conn = engine.connect()
-result = conn.execute("SELECT * from test_table")
+result = conn.execute("SELECT * fro" test_table")
 print(result.fetchall())
 ```
 
