@@ -4,7 +4,7 @@ google-cloud-bigquery>=3.35.0
 google-cloud-firestore == 2.21.0
 google-auth==2.40.3
 pytest==8.4.1
-setuptools==80.9.0
+setuptools==83.0.0
 pytest-cov==6.2.1
 pytest-html==4.1.1
 pytest-mypy==1.0.1
