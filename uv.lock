@@ -1590,7 +1590,7 @@ wheels = [
 
 [[package]]
 name = "python-datastore-sqlalchemy"
-version = "9.0.3"
+version = "0.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "google-auth" },
