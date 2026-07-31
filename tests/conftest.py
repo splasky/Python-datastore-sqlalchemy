@@ -76,6 +76,7 @@ def datastore_client():
             "start",
             "--host-port=localhost:8081",
             "--no-store-on-disk",
+            "--consistency=1.0",
             "--quiet",
         ]
     )
