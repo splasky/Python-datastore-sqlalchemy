@@ -23,6 +23,11 @@ jobs:
       with:
         python-version: '3.13'
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
     - name: Set up Java (required for Datastore emulator)
       uses: actions/setup-java@v4
       with:
@@ -44,14 +49,7 @@ jobs:
       run: 'gcloud config set project python-datastore-sqlalchemy'
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
-        else
-          echo "No requirements.txt found"
-        fi
+      run: uv sync --locked
 
     - name: Run tests
-      run: |
-        pytest
+      run: uv run pytest

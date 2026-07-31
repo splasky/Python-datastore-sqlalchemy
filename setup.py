@@ -17,64 +17,6 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import os
-import re
+from setuptools import setup
 
-from setuptools import setup, find_packages
-
-with open(
-    os.path.join(os.path.dirname(__file__), "sqlalchemy_datastore", "__init__.py")
-) as v:
-    version_match = re.compile(r'.*__version__ = "(.*?)"', re.S).match(v.read())
-if not version_match:
-    raise RuntimeError("Unable to find version string in __init__.py.")
-VERSION = version_match.group(1)
-
-readme = os.path.join(os.path.dirname(__file__), "README.md")
-with open(readme) as f:
-    long_description = f.read()
-
-
-setup(
-    name="python-datastore-sqlalchemy",
-    version=VERSION,
-    description="SQLAlchemy dialect for google cloud datastore",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    url="https://github.com/splasky/python-datastore-sqlalchemy",
-    author="HY Chang(splasky)",
-    author_email="hychang.1997.tw@gmail.com",
-    license="MIT",
-    classifiers=[
-        "Development Status :: 2 - Pre-Alpha",
-        "Intended Audience :: Developers",
-        "Programming Language :: Python",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: Implementation :: CPython",
-        "Topic :: Database :: Front-Ends",
-        "Operating System :: POSIX :: Linux",
-    ],
-    keywords="SQLAlchemy GCP Datastore",
-    python_requires=">=3.9",
-    project_urls={
-        "Documentation": "https://github.com/splasky/python-datastore-sqlalchemy/wiki",
-        "Source": "https://github.com/splasky/python-datastore-sqlalchemy",
-        "Tracker": "https://github.com/splasky/python-datastore-sqlalchemy/issues",
-    },
-    packages=find_packages(include=["sqlalchemy_datastore"]),
-    include_package_data=True,
-    install_requires=[
-        "sqlalchemy>=1.4.16,<3.0.0",
-        "google-cloud-datastore>=2.21.0",
-        "google-cloud-firestore>=2.21.0",
-        "google-cloud-bigquery>=3.35.0",
-        "google-auth>=2.40.0",
-        "sqlglot>=28.0.0",
-        "pandas>=2.0.0",
-        "requests",
-    ],
-    zip_safe=False,
-    entry_points={
-        "sqlalchemy.dialects": ["datastore = sqlalchemy_datastore:CloudDatastoreDialect"]
-    },
-)
+setup()
