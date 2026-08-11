@@ -53,3 +53,56 @@ jobs:
 
     - name: Run tests
       run: uv run pytest
+
+  superset-integration:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPERSET_CONFIG: tests.integration_tests.superset_test_config
+      SUPERSET_TESTENV: "true"
+
+    steps:
+    - name: Checkout package
+      uses: actions/checkout@v4
+      with:
+        path: python-datastore-sqlalchemy
+
+    - name: Checkout Superset
+      uses: actions/checkout@v4
+      with:
+        repository: apache/superset
+        ref: master
+        path: superset
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
+    - name: Install Superset system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libldap2-dev libsasl2-dev libssl-dev
+
+    - name: Install Superset dependencies
+      working-directory: superset
+      run: |
+        uv venv .venv --python 3.11
+        uv pip install -r requirements/development.txt
+        uv pip install -e ../python-datastore-sqlalchemy
+
+    - name: Initialize Superset test database
+      working-directory: superset
+      run: |
+        .venv/bin/superset db upgrade
+        .venv/bin/superset init
+        .venv/bin/superset load-test-users
+
+    - name: Run Superset datastore integration tests
+      working-directory: superset
+      run: .venv/bin/pytest -vv tests/integration_tests/db_engine_specs/datastore_tests.py
