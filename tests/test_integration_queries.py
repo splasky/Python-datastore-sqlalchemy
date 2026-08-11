@@ -33,8 +33,10 @@ def test_update_user(conn, datastore_client):
 
     # Find the inserted entity by querying the datastore client directly
     query = datastore_client.query(kind="users")
-    query.add_filter("name", "=", "UpdateTestUser")
-    entities = list(query.fetch())
+    entities = [
+        entity for entity in query.fetch()
+        if entity.get("name") == "UpdateTestUser"
+    ]
     assert len(entities) >= 1
     entity_id = entities[0].key.id
 
@@ -62,8 +64,10 @@ def test_delete_user(conn, datastore_client):
 
     # Find the inserted entity
     query = datastore_client.query(kind="users")
-    query.add_filter("name", "=", "DeleteTestUser")
-    entities = list(query.fetch())
+    entities = [
+        entity for entity in query.fetch()
+        if entity.get("name") == "DeleteTestUser"
+    ]
     assert len(entities) >= 1
     entity_id = entities[0].key.id
 
@@ -332,8 +336,10 @@ def test_task_insert_update_delete_raw_sql(conn, datastore_client):
 
     # Find the inserted entity
     query = datastore_client.query(kind="tasks")
-    query.add_filter("task", "=", "Coverage Test Task")
-    entities = list(query.fetch())
+    entities = [
+        entity for entity in query.fetch()
+        if entity.get("task") == "Coverage Test Task"
+    ]
     assert len(entities) >= 1
     entity_id = entities[0].key.id
 
