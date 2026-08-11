@@ -20,6 +20,7 @@ import logging
 from typing import Any, List, Optional
 
 from google.cloud import firestore_admin_v1
+from google.cloud.datastore.query import PropertyFilter
 from google.oauth2 import service_account
 from sqlalchemy import exc
 from sqlalchemy.engine import Connection, default
@@ -54,6 +55,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
     supports_unicode_binds = True
     returns_unicode_strings = True
     description_encoding = None
+    supports_statement_cache = False
 
     # JSON support - required for SQLAlchemy JSON type
     _json_serializer = None
@@ -88,9 +90,14 @@ class CloudDatastoreDialect(default.DefaultDialect):
         self._client = None
 
     @classmethod
-    def dbapi(cls):
+    def import_dbapi(cls):
         """Return the DBAPI 2.0 driver."""
         return datastore_dbapi
+
+    @classmethod
+    def dbapi(cls):
+        """Return the DBAPI 2.0 driver."""
+        return cls.import_dbapi()
 
     def do_ping(self, dbapi_connection):
         """Performs a simple operation to check if the connection is still alive."""
@@ -212,7 +219,7 @@ class CloudDatastoreDialect(default.DefaultDialect):
         """Retrieve column information from the database."""
         client = self._client
         query = client.query(kind="__Stat_PropertyType_PropertyName_Kind__")
-        query.add_filter("kind_name", "=", table_name)
+        query.add_filter(filter=PropertyFilter("kind_name", "=", table_name))
         properties = list(query.fetch())
 
         return [

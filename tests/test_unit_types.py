@@ -17,6 +17,7 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """Unit tests for _types module (no emulator required)."""
+import pytest
 import sqlalchemy.types
 from google.cloud.bigquery.schema import SchemaField
 
@@ -190,7 +191,13 @@ def test_get_sqla_column_type_repeated():
 
 def test_get_sqla_column_type_unknown():
     field = SchemaField("mystery", "UNKNOWN_TYPE_XYZ")
-    coltype = _get_sqla_column_type(field)
+
+    with pytest.warns(
+        sqlalchemy.exc.SAWarning,
+        match="Did not recognize type 'UNKNOWN_TYPE_XYZ' of column 'mystery'",
+    ):
+        coltype = _get_sqla_column_type(field)
+
     assert coltype is sqlalchemy.types.NullType
 
 
