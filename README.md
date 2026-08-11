@@ -43,7 +43,7 @@ Feel free to open issues and pull requests on GitHub.
 
 ## Development
 
-This project supports Python 3.10 and newer. It uses a uv-managed virtual environment by default. The lockfile is tracked so local development and CI use the same dependency resolution.
+This project supports Python 3.11 and newer. It uses a uv-managed virtual environment by default. The lockfile is tracked so local development and CI use the same dependency resolution.
 
 Install the development environment:
 ```bash
